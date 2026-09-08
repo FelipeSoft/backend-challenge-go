@@ -1,24 +1,22 @@
 # Desafio Backend — Processamento Distribuído de Apostas em Go
 
-Implemente um serviço em **Go**, usando **Uber Fx**, para receber e processar operações financeiras de provedores de jogos. O desafio explora situações comuns em sistemas de iGaming: disputa pelo saldo de uma carteira, mensagens repetidas, dependências fora de ordem e recuperação de processos interrompidos.
-
-A implementação e as decisões de arquitetura ficam a cargo do candidato.
+Implemente um serviço em **Go**, com **Uber Fx**, para processar operações financeiras de provedores de jogos em um ambiente distribuído.
 
 ## 1. Objetivo
 
 A aplicação deve oferecer uma API HTTP e um consumidor de mensagens que movimentem carteiras de jogadores com garantias equivalentes. Demonstre que o resultado financeiro continua correto com várias instâncias em execução e falhas entre as etapas do processamento.
 
-A avaliação considera precisão monetária, integridade do histórico financeiro, idempotência durável, concorrência, recuperação e capacidade de explicar as escolhas feitas. Organização de código importa, mas precisa sustentar essas garantias.
+A avaliação considera precisão monetária, integridade do ledger, idempotência persistente, concorrência, recuperação de falhas e decisões de arquitetura.
 
-## 2. Autenticação
+## 2. Autenticação e autorização
 
-Autenticação é opcional e não recebe pontuação própria. Priorize os cenários financeiros e de falha descritos neste documento.
+Autenticação e autorização são **obrigatórias**, com integração a um IdP externo OAuth 2.0/OIDC.
 
-Caso implemente autenticação, integre um provedor de identidade externo compatível com OIDC. Não crie um cadastro local de credenciais e senhas para este desafio.
+Recomenda-se **Keycloak** no Docker Compose e `client_credentials` para comunicação entre serviços. A escolha do IdP, a validação de credenciais e o modelo de permissões devem ser justificados em `ARCHITECTURE.md`. Cadastro de senhas e emissão própria de tokens estão fora do escopo.
 
-Caso deixe essa integração para depois, registre o desenho proposto em `ARCHITECTURE.md` e mantenha uma extensão identificável, como um middleware HTTP ou uma interface `ProviderIdentityResolver`.
+A identidade autenticada deve determinar o `providerId` autorizado. Provedores acessam apenas suas próprias transações, inclusive em replays; operações de carteira são restritas ao serviço interno.
 
-Os health checks são públicos. Considere a fila um canal interno confiável, preservando a validação de domínio da identidade do provedor e de sua relação com a operação recebida.
+O acesso à mensageria deve ser controlado por credenciais e políticas do broker, preservando as validações de domínio no consumidor.
 
 ## 3. Ambiente de execução e falhas
 
@@ -35,7 +33,7 @@ Assuma entrega **at-least-once** e prepare a solução para:
 
 Nenhuma dessas situações pode gerar movimentação duplicada, saldo negativo ou perda de um evento cujo registro foi confirmado no banco.
 
-## 4. Stack e uso do Uber Fx
+## 4. Stack
 
 ### Tecnologias obrigatórias
 
@@ -43,8 +41,9 @@ Nenhuma dessas situações pode gerar movimentação duplicada, saldo negativo o
 | --- | --- |
 | Linguagem e compilação | Go; declare a versão utilizada em `go.mod` e no Dockerfile |
 | Dependências | Go Modules, com `go.mod` e `go.sum` versionados |
-| Composição da aplicação | [Uber Fx](https://pkg.go.dev/go.uber.org/fx), pacote `go.uber.org/fx` |
+| Composição da aplicação | Uber Fx (`go.uber.org/fx`) |
 | HTTP | `net/http` ou um roteador Go à sua escolha |
+| Autenticação | IdP externo OAuth 2.0/OIDC; Keycloak recomendado |
 | Persistência | PostgreSQL |
 | Mensageria | AWS SQS, executado localmente com LocalStack ou MiniStack |
 | Ambiente local | Docker Compose |
@@ -53,105 +52,59 @@ Nenhuma dessas situações pode gerar movimentação duplicada, saldo negativo o
 
 ### Acesso ao banco
 
-Prefira `pgx` com SQL explícito; `sqlc` pode ser usado para gerar código a partir das consultas. `database/sql` e GORM também são aceitos, desde que as transações, os locks e as constraints continuem verificáveis.
+`pgx` com SQL explícito é preferencial; `sqlc` é opcional. `database/sql` e GORM são aceitos. Transações, locks e constraints devem permanecer explícitos e verificáveis.
 
-Explique em `ARCHITECTURE.md` a escolha da biblioteca, a representação persistida de `Money` e como todos os repositórios de uma operação compartilham a mesma transação SQL.
+Documente em `ARCHITECTURE.md` a biblioteca escolhida, o mapeamento de `Money` e a delimitação da transação SQL entre os repositórios.
 
-### Uso obrigatório do Fx
+### Composição e ciclo de vida
 
-O Fx deve compor a aplicação de verdade: configuração, conexões, repositórios, casos de uso, handlers e workers devem receber dependências por construtores. Utilize `fx.Module` para agrupamentos coerentes, `fx.Provide` para registrar construtores e `fx.Invoke` para conectar os componentes que precisam participar da execução. Um construtor registrado só será executado se seu resultado for necessário no grafo. Consulte a [referência do Fx](https://pkg.go.dev/go.uber.org/fx).
+Use Uber Fx na composição de configuração, conexões, repositórios, casos de uso, handlers e workers, com injeção por construtores e organização por `fx.Module`, `fx.Provide` e `fx.Invoke`.
 
-O gerenciamento de recursos deve usar `fx.Lifecycle`:
+Gerencie servidor, workers e recursos com `fx.Lifecycle`:
 
-- `OnStart`: preparar recursos e iniciar servidor e workers;
-- `OnStop`: interromper novas entradas, finalizar ou liberar trabalho em andamento e fechar os recursos;
-- hooks devem respeitar seus prazos; loops permanentes devem rodar em goroutines gerenciadas;
-- cada worker deve ter cancelamento e término observável; não use o contexto temporário de `OnStart` como contexto de toda a execução do worker.
+- inicialização com validação de configuração e dependências;
+- cancelamento, prazos de execução e término observável dos workers;
+- shutdown com interrupção de novas entradas e conclusão ou liberação do trabalho em andamento;
+- fechamento das dependências após a finalização dos componentes que as utilizam.
 
-Os hooks de encerramento executam na ordem inversa de registro. Organize as dependências para que o banco continue disponível durante a finalização do trabalho. Veja o [ciclo de vida do Fx](https://uber-go.github.io/fx/lifecycle.html).
-
-Mantenha o domínio independente de Fx, HTTP, SQS e bibliotecas de persistência. Receber dependências pelo construtor é suficiente para testar os casos de uso sem iniciar a aplicação inteira.
-
-### Organização sugerida
-
-Adapte os pacotes ao desenho escolhido. Esta árvore ilustra responsabilidades; não exige criar todas as pastas nem abstrações sem uso.
-
-```text
-cmd/
-  server/main.go
-internal/
-  app/                 # composição com Fx
-  config/
-  domain/              # Money, Wallet, transações e eventos
-  application/         # casos de uso e interfaces necessárias
-  adapters/
-    http/
-    postgres/
-    sqs/
-  workers/             # consumo, outbox e referências pendentes
-  observability/
-migrations/
-tests/integration/
-Dockerfile
-compose.yaml
-go.mod
-go.sum
-README.md
-ARCHITECTURE.md
-```
+O domínio deve permanecer independente de Fx, HTTP, SQS e bibliotecas de persistência. A organização dos pacotes fica a critério do candidato.
 
 ## 5. Garantias obrigatórias
 
 1. Dinheiro não pode passar por `float32` ou `float64`, nem durante parsing, cálculo, serialização ou persistência.
-2. Idempotência precisa sobreviver ao reinício de todos os processos; um mapa, cache local ou `sync.Mutex` não oferece essa garantia.
-3. Locks em memória e a deduplicação do SQS FIFO não substituem a coordenação entre instâncias no banco.
+2. Idempotência deve ser persistente e sobreviver ao reinício de todos os processos.
+3. As invariantes financeiras devem ser garantidas no banco, independentemente de locks locais e da deduplicação do SQS FIFO.
 4. Eventos externos só podem ser publicados depois da confirmação da transação que os originou.
 5. O ledger deve ser append-only: correções financeiras exigem novos lançamentos.
-6. Carteiras independentes devem poder avançar em paralelo. Não serialize todas elas com um lock global.
-7. Ler o saldo, calcular e gravar o resultado exige uma estratégia que impeça lost updates.
-8. Unicidade, não negatividade e proteção contra alteração do ledger devem existir também no banco, por constraints, índices e mecanismos adequados de imutabilidade. Validação apenas em Go é insuficiente.
+6. Carteiras independentes devem avançar em paralelo; locks globais são proibidos.
+7. Atualizações de saldo devem impedir lost updates.
+8. Unicidade, não negatividade e imutabilidade do ledger devem ser impostas pelo schema, pelas constraints e pelos mecanismos de proteção do banco.
 
-## 6. Modelagem em Go
+## 6. Modelo de domínio
 
 ### Encapsulamento e erros
 
-Modele as entidades com structs, estado interno não exportado e métodos que representem transições de negócio. Use funções construtoras, como `NewMoney`, `OpenWallet` e `NewWagerTransaction`, que retornem erros quando necessário. A visibilidade em Go é por pacote; organize esses limites para proteger as invariantes. A abordagem de construtores está descrita em [Effective Go](https://go.dev/doc/effective_go#composite_literals).
+Modele entidades com estado encapsulado, construtores com validação e métodos explícitos de transição. As invariantes devem ser preservadas em todas as operações públicas.
 
-Separe criação de reidratação: funções como `RehydrateWallet` devem reconstruir o estado persistido sem executar novamente movimentações, transições ou emissão de eventos.
+Separe criação e reidratação. A reidratação não deve reaplicar movimentações, transições ou emissão de eventos.
 
-Defina como valores zero inválidos serão detectados. Campos não exportados não impedem, por si só, a existência de `Money{}` ou de uma entidade sem inicialização válida.
+Valores de domínio não inicializados ou inválidos devem ser rejeitados.
 
-Use erros explícitos para validação e regras de negócio, com classificação por tipos ou `errors.Is`/`errors.As`. Não use `panic` como fluxo esperado. Operações de I/O devem receber `context.Context` e respeitar cancelamento e timeout.
-
-Os trechos a seguir ilustram dados e contratos, não constituem uma implementação pronta. Nomes e assinaturas podem mudar se as garantias forem mantidas.
+Erros de domínio devem ser classificáveis por tipo ou `errors.Is`/`errors.As`. `panic` não deve representar rejeições de negócio. Operações de I/O devem receber `context.Context` e respeitar cancelamento e timeout.
 
 ### 6.1. Money
 
-Uma representação possível para o escopo de duas casas decimais é um inteiro de unidades mínimas:
+`Money` é um value object imutável, com valor e moeda. Deve suportar criação a partir de string decimal, zero por moeda, soma, subtração, negação, comparação e serialização.
 
-```go
-type MoneyDTO struct {
-	Amount   string `json:"amount"`
-	Currency string `json:"currency"`
-}
-
-type Money struct {
-	minorUnits int64
-	currency   string
-}
-```
-
-Implemente criação a partir de string decimal, zero por moeda, soma, subtração, negação, comparação e conversão para DTO. Cada operação aritmética deve devolver um novo valor, sem modificar os operandos.
-
-Também é aceita uma biblioteca decimal de precisão exata. Justifique a alternativa escolhida e teste seus limites.
+Use `int64` em unidades mínimas ou uma biblioteca decimal de precisão exata. Documente a representação e seus limites.
 
 - O contrato externo recebe e devolve valores como `{"amount":"25.00","currency":"BRL"}`.
-- Use escala fixa de duas casas e código de moeda ISO 4217. Não converta por ponto flutuante para chegar ao formato final.
+- Use escala fixa de duas casas e código de moeda ISO 4217.
 - Rejeite valores vazios, `NaN`, `Infinity`, notação científica, escala excedente e valores negativos nas entradas financeiras externas.
 - Não arredonde silenciosamente uma entrada inválida. Caso aceite formas equivalentes, documente a normalização anterior ao hash de idempotência.
 - Aritmética e comparação de valores monetários exigem moedas compatíveis.
 - Se utilizar `int64`, trate overflow no parsing, na soma, na subtração e na negação.
-- O domínio pode representar valores negativos para diferenças ou cálculos internos; a carteira continua proibida de terminar negativa.
+- Valores negativos são permitidos em diferenças e cálculos internos, mas não no saldo da carteira.
 - A persistência deve preservar exatamente valor e moeda, por exemplo com unidades mínimas em `BIGINT` ou decimal em `NUMERIC`.
 
 É permitido operar apenas em BRL nos cenários principais, desde que o tipo carregue a moeda e existam testes de incompatibilidade entre moedas.
@@ -169,38 +122,15 @@ Exponha criação, reidratação e operações de débito/crédito, mantendo a a
 - A versão inicial é `1`; depois da criação, incremente-a apenas quando houver mudança de saldo.
 - Disputas entre escritores não podem descartar uma atualização confirmada.
 
-Você pode usar a versão para controle otimista ou escolher outra estratégia, explicando a decisão.
+A estratégia de controle de concorrência deve ser documentada.
 
 ### 6.3. WagerTransaction
 
-Use tipos nomeados para os valores de domínio, por exemplo:
-
-```go
-type TransactionKind string
-
-const (
-	KindOpening  TransactionKind = "OPENING"
-	KindBet      TransactionKind = "BET"
-	KindWin      TransactionKind = "WIN"
-	KindLoss     TransactionKind = "LOSS"
-	KindRefund   TransactionKind = "REFUND"
-	KindRollback TransactionKind = "ROLLBACK"
-)
-
-type TransactionStatus string
-
-const (
-	StatusPending          TransactionStatus = "PENDING"
-	StatusPendingReference TransactionStatus = "PENDING_REFERENCE"
-	StatusProcessed        TransactionStatus = "PROCESSED"
-	StatusRejected         TransactionStatus = "REJECTED"
-	StatusFailed           TransactionStatus = "FAILED"
-)
-```
+Tipos: `OPENING`, `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`.
 
 Para operações externas, a transação registra os identificadores interno e externo, provedor, chave de idempotência, hash do payload, carteira, jogador, rodada, jogo, tipo, `Money`, referência externa opcional, estado e timestamps. Quando aplicável, persista também a referência interna resolvida, o código de falha e o resultado financeiro retornado ao provedor.
 
-Ela começa em `PENDING`. Seus métodos devem expressar processamento, espera por referência, rejeição e falha permanente, validando as transições permitidas.
+A transação inicia em `PENDING`. As transições para processamento, espera por referência, rejeição e falha permanente devem ser validadas pelo domínio.
 
 | Estado | Significado |
 | --- | --- |
@@ -212,17 +142,17 @@ Ela começa em `PENDING`. Seus métodos devem expressar processamento, espera po
 
 Uma transação terminal não deve sofrer novas transições. Replay consulta seu resultado persistido sem reaplicar a operação. Documente a máquina de estados e como distingue falhas transitórias de falhas permanentes.
 
-Se a implementação confirmar uma operação em `PENDING` antes de executá-la, deve persistir também o necessário para sua retomada por um worker. Qualquer `PENDING` confirmado precisa ser recuperável por outra instância após uma interrupção; essa obrigação não se limita a `PENDING_REFERENCE`. É permitido concluir operações sem dependências de forma síncrona, sem persistir uma etapa intermediária de aceite.
+Todo `PENDING` confirmado deve ter retomada durável por outra instância após uma interrupção. Operações sem dependências podem ser concluídas de forma síncrona, sem commit intermediário de aceite.
 
 `OPENING` é reservado à abertura interna de carteira. Rejeite esse tipo quando enviado por HTTP ou SQS.
 
-Uma transação `OPENING` tem identidade interna estável, carteira, jogador, moeda, valor, estado e timestamps. Provedor, ID externo, chave de idempotência externa, hash do payload externo, rodada, jogo e referência não se aplicam a essa origem. Modele essa distinção no schema e nas constraints, sem exigir que `POST /wallets` forneça metadados de uma aposta. A unicidade da carteira e a atomicidade da abertura devem impedir um segundo crédito inicial.
+`OPENING` exige identidade interna estável, carteira, jogador, moeda, valor, estado e timestamps. Provedor, ID externo, chave e hash externos, rodada, jogo e referência não se aplicam a essa origem. O schema deve distinguir operações internas e externas e impedir crédito inicial duplicado.
 
 ### 6.4. WalletLedgerEntry
 
 Cada lançamento registra `id`, `walletId`, `transactionId`, direção (`DEBIT` ou `CREDIT`), valor, saldo anterior, saldo posterior e instante de criação.
 
-A construção deve validar a equação financeira do lançamento. O tipo não deve oferecer setters nem métodos de edição, e getters não devem permitir mutação indireta de seu estado.
+O lançamento é imutável e sua construção deve validar `balanceAfter = balanceBefore ± money`, conforme a direção.
 
 Imponha no banco a unicidade de `(walletId, transactionId)` e a proteção contra edição ou exclusão. `LOSS` e operações rejeitadas não produzem lançamentos. Um ledger de partidas dobradas é opcional.
 
@@ -245,7 +175,7 @@ Na entrada por SQS, o registro da inbox e a conclusão durável do tratamento de
 | `REFUND` | Crédito | Devolve integralmente o valor de uma `BET` processada |
 | `ROLLBACK` | Movimento contrário ao original | Desfaz integralmente uma `BET`, `WIN` ou `REFUND` processada |
 
-Para `REFUND` e `ROLLBACK`, `referenceExternalTransactionId` é obrigatório. Resolva-o pelo par `(providerId, referenceExternalTransactionId)`, nunca presumindo que seja um ID interno.
+Para `REFUND` e `ROLLBACK`, `referenceExternalTransactionId` é obrigatório e deve ser resolvido por `(providerId, referenceExternalTransactionId)`.
 
 A operação e sua referência devem concordar em provedor, jogador, carteira, moeda e rodada. O valor da reversão precisa ser igual ao valor referenciado; reversões parciais não fazem parte do desafio.
 
@@ -261,13 +191,13 @@ Persista a operação como `PENDING_REFERENCE` quando a referência ainda não t
 
 Defina um número máximo de tentativas ou TTL. Quando esgotado, finalize como `REJECTED`, informando um código de referência não encontrada e produzindo o evento de rejeição. Explique também o comportamento quando a referência existe, mas ainda está pendente ou terminou sem sucesso.
 
-Toda rejeição deve fornecer um `failureCode` estável, documentado e interpretável por máquina. O provedor precisa conseguir distinguir uma entrada corrigível de um resultado definitivo.
+Toda rejeição deve fornecer um `failureCode` estável e documentado, distinguindo entradas corrigíveis de resultados definitivos.
 
 ## 8. Concorrência
 
 A coordenação deve ocorrer por carteira. Escolha locking pessimista, controle otimista com retry limitado, atualização atômica condicionada ou uma combinação justificável.
 
-As garantias precisam continuar válidas com pelo menos três processos independentes, cada um com suas próprias conexões e memória. Goroutines dentro de um único processo não demonstram essa propriedade.
+As garantias devem ser demonstradas com pelo menos três processos independentes, cada um com suas próprias conexões e memória.
 
 Teste obrigatório: uma carteira com **100.00 BRL** recebe, ao mesmo tempo, duas apostas distintas de **80.00 BRL**.
 
@@ -377,18 +307,18 @@ Exemplo considerando apenas a abertura e a aposta apresentadas acima:
 }
 ```
 
-Reconstrua o saldo a partir do ledger, incluindo a abertura. Faça a comparação em uma visão consistente dos dados, para evitar falsos desvios durante movimentações concorrentes. Defina `difference` como saldo armazenado menos saldo reconstruído.
+Reconstrua o saldo a partir do ledger, incluindo a abertura, e compare os valores em uma visão consistente dos dados. `difference` é o saldo armazenado menos o saldo reconstruído.
 
-Uma divergência deve aparecer na resposta, nos logs e em uma métrica. Não ajuste o saldo automaticamente para esconder a inconsistência.
+Reporte divergências na resposta, nos logs e em uma métrica. A reconciliação não deve alterar o saldo.
 
-### Saúde da aplicação
+### Health checks públicos
 
 ```http
 GET /health/live
 GET /health/ready
 ```
 
-Liveness indica se o processo está vivo. Readiness verifica a disponibilidade das dependências PostgreSQL e SQS. Ambos dispensam autenticação.
+Liveness do processo e readiness de PostgreSQL e SQS.
 
 ## 10. Consumidor SQS
 
@@ -415,7 +345,7 @@ Exemplo de corpo de mensagem:
 }
 ```
 
-O adaptador SQS deve chamar o mesmo caso de uso do adaptador HTTP. `data.idempotencyKey` exerce o papel do header; a inbox acrescenta deduplicação de transporte à idempotência financeira.
+HTTP e SQS devem compartilhar o caso de uso e as garantias de idempotência financeira. Na entrada por SQS, a chave é `data.idempotencyKey`, com deduplicação adicional pela inbox.
 
 - Use o `messageId` do envelope como identidade durável da mensagem para o consumidor e verifique seu hash em reentregas.
 - Remova a mensagem da fila somente após o commit do seu tratamento durável.
@@ -424,17 +354,17 @@ O adaptador SQS deve chamar o mesmo caso de uso do adaptador HTTP. `data.idempot
 - Documente limites de tentativas, visibility timeout e tratamento de mensagens inválidas.
 - Em `SIGTERM`, pare de buscar trabalho e conclua o processamento em andamento dentro do prazo, ou libere sua visibilidade para reentrega segura.
 
-Explique a configuração de `MessageGroupId` e `MessageDeduplicationId`. A ordenação por carteira pode reduzir disputas, mas a correção precisa permanecer no banco mesmo quando a API recebe operações concorrentes.
+Documente `MessageGroupId` e `MessageDeduplicationId` e valide a concorrência entre entradas HTTP e SQS.
 
 ## 11. Publicação com transactional outbox
 
-O commit de uma operação deve incluir seu estado, a alteração de saldo quando houver, o ledger, a inbox quando aplicável e os registros de eventos. Nenhuma confirmação parcial pode deixar essas informações divergentes.
+Estado da operação, saldo, ledger, inbox e registros de eventos devem ser confirmados atomicamente, conforme aplicável.
 
 Um worker separado publica os registros pendentes da outbox. Ele deve suportar múltiplos publishers, disputa por registros, backoff e recuperação de trabalho abandonado.
 
-Demonstre dois pontos de falha: interrupção depois do commit e antes da publicação; e interrupção depois da publicação e antes de marcar o registro como publicado. No primeiro caso, outra instância deve publicar o evento. No segundo, a repetição deve preservar o `eventId`, permitindo deduplicação pelo consumidor.
+Demonstre recuperação após interrupção entre commit e publicação e entre publicação e confirmação na outbox. Eventos pendentes devem ser assumidos por outra instância; republicações devem preservar o `eventId`.
 
-Documente e provisione o destino dos eventos de saída. Não os envie à fila de comandos sem um contrato explícito de roteamento e consumo.
+Provisione o destino dos eventos de saída e documente seus contratos de roteamento e consumo.
 
 ### Eventos exigidos
 
@@ -445,23 +375,11 @@ Documente e provisione o destino dos eventos de saída. Não os envie à fila de
 | `WalletBalanceChanged` | Alteração efetiva do saldo |
 | `WagerTransactionPendingReference` | Registro de espera pela referência |
 
-Use tipos concretos por evento e composição em Go. O envelope deve carregar `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId` opcional, `occurredAt`, `version` e `data` tipado.
+Defina tipos concretos por evento. O envelope deve conter `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId` opcional, `occurredAt`, `version` e `data` tipado.
 
-Por exemplo, o payload de mudança de saldo pode ter o seguinte formato:
+O payload de `WalletBalanceChanged` deve incluir `walletId`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter` e `walletVersion`.
 
-```go
-type WalletBalanceChangedData struct {
-	WalletID      string   `json:"walletId"`
-	TransactionID string   `json:"transactionId"`
-	Direction     string   `json:"direction"`
-	Money         MoneyDTO `json:"money"`
-	BalanceBefore MoneyDTO `json:"balanceBefore"`
-	BalanceAfter  MoneyDTO `json:"balanceAfter"`
-	WalletVersion int64    `json:"walletVersion"`
-}
-```
-
-O construtor de cada evento deve determinar seu tipo e versão. Serialize o instante em UTC, no formato RFC 3339, e os valores monetários como DTOs com strings decimais. O payload persistido na outbox deve ser um snapshot estável, sem referências mutáveis para o agregado.
+Tipo e versão devem ser definidos pelo construtor do evento. Use timestamps UTC em RFC 3339 e valores monetários em strings decimais. O payload da outbox deve ser um snapshot imutável.
 
 ## 12. Observabilidade
 
@@ -477,13 +395,17 @@ Inclua os health checks definidos na API. Tracing com OpenTelemetry e dashboards
 
 Cubra parsing e operações de `Money`, escala, limites numéricos, entradas inválidas, incompatibilidade de moedas, invariantes da carteira, transições de estado, regras dos cinco tipos externos e conflito de payload para a mesma chave. Inclua a política de valores zero de cada tipo e a abertura interna com seus metadados e eventos.
 
-Prefira testes orientados a tabela quando ajudarem a explicitar os casos. Verifique resultados e invariantes; cobertura percentual isolada não demonstra correção.
-
 ### Testes de integração
 
-Execute PostgreSQL e LocalStack ou MiniStack em containers reais. Verifique migrations, constraints, imutabilidade do ledger, atomicidade financeira, inbox, reentrega, outbox concorrente, retry, DLQ e recuperação após reinicialização.
+Execute PostgreSQL, o IdP e LocalStack ou MiniStack em containers reais. Verifique migrations, constraints, imutabilidade do ledger, atomicidade financeira, inbox, reentrega, outbox concorrente, retry, DLQ e recuperação após reinicialização.
 
 Adicione uma verificação da composição Fx e de seu início e encerramento, incluindo liberação de recursos dos workers. Não substitua toda a infraestrutura por mocks.
+
+### Autenticação e autorização
+
+- Integração real com o IdP e rejeição de credenciais ausentes, inválidas ou expiradas.
+- Isolamento entre provedores, inclusive em consultas e replays, e restrição das operações internas.
+- Ausência de efeitos financeiros ou exposição de dados em acessos não autorizados.
 
 ### Testes de concorrência e recuperação
 
@@ -498,9 +420,9 @@ Adicione uma verificação da composição Fx e de seu início e encerramento, i
 
 Ao final, confira o saldo armazenado contra a soma de créditos menos débitos do ledger. Inclua cenários que cruzem HTTP e SQS para a mesma operação.
 
-Nos testes de duplicidade, comprove que requisições ou reentregas repetidas chegaram à aplicação. A deduplicação de envio do broker não pode ser a única responsável por produzir um único efeito financeiro.
+Os testes de duplicidade devem exercitar a deduplicação da aplicação, com recebimentos repetidos comprovados.
 
-Execute `go test -race` nos testes aplicáveis. O detector de races complementa os testes, mas não prova a ausência de anomalias no banco ou entre processos.
+Execute `go test -race` nos testes aplicáveis.
 
 ## 14. Critérios de avaliação
 
@@ -510,15 +432,15 @@ Execute `go test -race` nos testes aplicáveis. O detector de races complementa 
 | Concorrência | 20 | Coordenação entre processos e ausência de atualizações perdidas |
 | Idempotência | 15 | Persistência, detecção de conflito e reprodução do resultado original |
 | Mensageria e recuperação | 15 | Inbox, outbox, retries, DLQ e encerramento seguro |
-| Modelagem e arquitetura | 10 | Encapsulamento em Go, limites de responsabilidade e composição com Fx |
-| Testes | 10 | Cenários reais de infraestrutura, paralelismo e interrupção |
+| Modelagem e arquitetura | 10 | Encapsulamento em Go, composição com Fx e políticas de autenticação e autorização |
+| Testes | 10 | Integração real, isolamento entre provedores, paralelismo e interrupção |
 | Observabilidade | 5 | Diagnóstico por logs, métricas e health checks |
 | Documentação | 5 | Execução reproduzível e decisões técnicas explicadas |
 | **Total** | **100** | |
 
-São eliminatórios: cálculo monetário em ponto flutuante, saldo negativo por concorrência, movimentação duplicada, idempotência restrita à memória, dependência de uma única instância para funcionar corretamente, publicação anterior ao commit, ausência de ledger auditável ou substituição integral de PostgreSQL e SQS por mocks nos testes.
+São eliminatórios: ausência de autenticação efetiva nos endpoints de negócio, acesso não autorizado a operações ou transações, cálculo monetário em ponto flutuante, saldo negativo por concorrência, movimentação duplicada, idempotência restrita à memória, dependência de uma única instância para funcionar corretamente, publicação anterior ao commit, ausência de ledger auditável ou substituição integral de PostgreSQL, SQS e IdP por mocks nos testes.
 
-Como diferenciais, considere partidas dobradas, tracing ou um experimento de carga. Se fizer teste de carga, forneça um comando reproduzível e descreva ambiente, metodologia, throughput, percentis p50/p95/p99, erros, conflitos e atraso da outbox. Não há uma meta mínima de requisições por segundo.
+Partidas dobradas, tracing e testes de carga são diferenciais opcionais. Testes de carga devem incluir comando reproduzível, ambiente, metodologia, throughput, p50/p95/p99, erros, conflitos e atraso da outbox. Não há meta mínima de RPS.
 
 ## 15. Entrega
 
@@ -526,9 +448,11 @@ Entregue o código, migrations, ambiente Docker Compose e instruções suficient
 
 O `README.md` da solução deve explicar pré-requisitos, variáveis de ambiente, inicialização das filas, aplicação e reversão das migrations, execução da aplicação, exemplos de chamadas e comandos de teste. Inclua `.env.example` com valores locais de exemplo, sem segredos reais.
 
-No `ARCHITECTURE.md`, registre as decisões sobre dinheiro, transações, idempotência, locks, referências pendentes, reversões, inbox/outbox, autenticação, uso do Fx e shutdown. Explicite limitações, interpretações adotadas e trabalho não concluído.
+Inclua o provisionamento automático do IdP, identidades de teste e instruções para executar os fluxos autenticados.
 
-Disponibilize os comandos abaixo, ou equivalentes claramente documentados. Eles são uma expectativa para a implementação entregue, não arquivos já presentes neste repositório de enunciado.
+No `ARCHITECTURE.md`, registre as decisões sobre dinheiro, transações, idempotência, locks, referências pendentes, reversões, inbox/outbox, autenticação, autorização, uso do Fx e shutdown. Explicite limitações, interpretações adotadas e trabalho não concluído.
+
+Disponibilize os comandos abaixo ou equivalentes documentados:
 
 ```sh
 docker compose up --build
@@ -539,4 +463,4 @@ go vet ./...
 
 Documente separadamente como preparar as dependências dos testes e executar integração, múltiplas instâncias e simulações de falha. Se utilizar build tags, informe os comandos correspondentes.
 
-O código deve estar formatado com `gofmt`, as dependências devem ser reproduzíveis e os testes precisam permitir verificar as garantias descritas neste desafio.
+Entregue código formatado com `gofmt` e dependências reproduzíveis.
