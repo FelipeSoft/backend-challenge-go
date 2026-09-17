@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: wagering_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=sqs
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.0
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    command: start-dev
+    ports:
+      - "8080:8080"
+
+  app-1:
+    build: .
+    ports:
+      - "8081:8080"
+    environment:
+      - DB_URL=postgres://postgres:password@postgres:5432/wagering_db?sslmode=disable
+      - SQS_ENDPOINT=http://localstack:4566
+    depends_on:
+      - postgres
+      - localstack
+
+  app-2:
+    build: .
+    ports:
+      - "8082:8080"
+    environment:
+      - DB_URL=postgres://postgres:password@postgres:5432/wagering_db?sslmode=disable
+      - SQS_ENDPOINT=http://localstack:4566
+    depends_on:
+      - postgres
+      - localstack
+
+  app-3:
+    build: .
+    ports:
+      - "8083:8080"
+    environment:
+      - DB_URL=postgres://postgres:password@postgres:5432/wagering_db?sslmode=disable
+      - SQS_ENDPOINT=http://localstack:4566
+    depends_on:
+      - postgres
+      - localstack
+
+volumes:
+  pgdata:
