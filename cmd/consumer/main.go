@@ -56,67 +56,66 @@ func main() {
 			ctx, cancel := context.WithCancel(context.Background())
 			lc.Append(fx.Hook{
 				OnStart: func(c context.Context) error {
-					logger.Info("Garantindo a criação das filas SQS FIFO e DLQ...")
-					dlqName := "wager-transactions-dlq.fifo"
-					mainQueueName := "wager-transactions.fifo"
-					dlqRes, err := client.CreateQueue(c, &awsSQS.CreateQueueInput{
-						QueueName: aws.String(dlqName),
+					logger.Info("Ensuring the input and output SQS queue creation (Outbox)...")
+					inDlqName := "wager-transactions-dlq.fifo"
+					inQueueName := "wager-transactions.fifo"
+					inDlqRes, err := client.CreateQueue(c, &awsSQS.CreateQueueInput{
+						QueueName: aws.String(inDlqName),
 						Attributes: map[string]string{
 							"FifoQueue":                 "true",
 							"ContentBasedDeduplication": "true",
 						},
 					})
 					if err != nil {
-						logger.Error("Erro ao criar DLQ SQS", "error", err)
+						logger.Error("Error to create input DLQ in SQS", "error", err)
 						return err
 					}
-					attrRes, err := client.GetQueueAttributes(c, &awsSQS.GetQueueAttributesInput{
-						QueueUrl: dlqRes.QueueUrl,
+					inDlqAttrRes, err := client.GetQueueAttributes(c, &awsSQS.GetQueueAttributesInput{
+						QueueUrl: inDlqRes.QueueUrl,
 						AttributeNames: []sqsTypes.QueueAttributeName{
 							sqsTypes.QueueAttributeNameQueueArn,
 						},
 					})
 					if err != nil {
-						logger.Error("Erro ao buscar ARN da DLQ", "error", err)
+						logger.Error("Error to query input DLQ ARN", "error", err)
 						return err
 					}
-					dlqArn := attrRes.Attributes["QueueArn"]
-					redrivePolicy := map[string]string{
-						"deadLetterTargetArn": dlqArn,
+					inDlqArn := inDlqAttrRes.Attributes["QueueArn"]
+					inRedrivePolicy := map[string]string{
+						"deadLetterTargetArn": inDlqArn,
 						"maxReceiveCount":     "5",
 					}
-					policyBytes, _ := json.Marshal(redrivePolicy)
+					inPolicyBytes, _ := json.Marshal(inRedrivePolicy)
 					_, err = client.CreateQueue(c, &awsSQS.CreateQueueInput{
-						QueueName: aws.String(mainQueueName),
+						QueueName: aws.String(inQueueName),
 						Attributes: map[string]string{
 							"FifoQueue":                 "true",
 							"ContentBasedDeduplication": "true",
-							"RedrivePolicy":             string(policyBytes),
+							"RedrivePolicy":             string(inPolicyBytes),
 						},
 					})
 					if err != nil {
-						logger.Error("Erro ao criar fila principal SQS", "error", err)
+						logger.Error("Error to create main input queue in SQS", "error", err)
 						return err
 					}
-
-					logger.Info("Filas SQS provisionadas com sucesso. Iniciando o consumer em background...")
+					logger.Info("All SQS queues (input and output) was provisioned successfully. Starting consumer...")
 					go func() {
 						if err := consumer.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
-							logger.Error("Consumer SQS encerrou com erro crítico", "error", err)
+							logger.Error("SQS Consumer stopped with a critical error", "error", err)
 						}
 					}()
 					return nil
 				},
 				OnStop: func(c context.Context) error {
-					logger.Info("Sinal SIGTERM recebido. Parando o consumer SQS graciosamente...")
+					logger.Info("SIGTERM signal received. Stopping SQS consumer with graceful shutdown...")
 					cancel()
 					stopCtx, stopCancel := context.WithTimeout(c, 10*time.Second)
 					defer stopCancel()
 					if err := consumer.Stop(stopCtx); err != nil {
-						logger.Error("Erro ao encerrar o consumer SQS", "error", err)
+						logger.Error("Error to stop SQS consumer", "error", err)
 						return err
 					}
-					logger.Info("Consumer SQS finalizado com sucesso.")
+					logger.Info("SQS consumer stopped successfully.")
 					return nil
 				},
 			})

@@ -1,10 +1,8 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_DB: wagering_db
+      POSTGRES_DB: jungle_gaming_db
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin
     ports:
@@ -29,7 +27,11 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-    command: start-dev
+    command: 
+      - "start-dev"
+      - "--import-realm"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
     ports:
       - "8080:8080"
 

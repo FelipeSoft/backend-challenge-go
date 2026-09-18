@@ -39,12 +39,11 @@ func NewSQSConsumer(client *sqs.Client, queueURL string, createWagerTransaction 
 
 func (c *SQSConsumer) Start(ctx context.Context) error {
 	c.isRunning = true
-	c.logger.Info("Iniciando escuta de mensagens SQS", "queue_url", c.queueURL)
-
+	c.logger.Info("Listening SQS messages", "queue_url", c.queueURL)
 	for c.isRunning {
 		select {
 		case <-ctx.Done():
-			c.logger.Info("Contexto cancelado, parando o consumer SQS...")
+			c.logger.Info("Cancelled context, stopping SQS consumer...")
 			return nil
 		default:
 			output, err := c.client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
@@ -58,23 +57,21 @@ func (c *SQSConsumer) Start(ctx context.Context) error {
 				if errors.Is(err, context.Canceled) {
 					return nil
 				}
-				c.logger.Error("Erro ao receber mensagem do SQS", "error", err)
+				c.logger.Error("Error to receive SQS message", "error", err)
 				time.Sleep(2 * time.Second)
 				continue
 			}
-
 			for _, msg := range output.Messages {
 				if err := c.processMessage(ctx, msg); err != nil {
-					c.logger.Error("Falha ao processar mensagem do SQS", "message_id", *msg.MessageId, "error", err)
+					c.logger.Error("Fail to process SQS message", "message_id", *msg.MessageId, "error", err)
 					continue
 				}
-
 				_, err = c.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 					QueueUrl:      &c.queueURL,
 					ReceiptHandle: msg.ReceiptHandle,
 				})
 				if err != nil {
-					c.logger.Error("Erro ao deletar mensagem do SQS após sucesso", "message_id", *msg.MessageId, "error", err)
+					c.logger.Error("Error to delete SQS message after success", "message_id", *msg.MessageId, "error", err)
 				}
 			}
 		}
@@ -84,33 +81,28 @@ func (c *SQSConsumer) Start(ctx context.Context) error {
 
 func (c *SQSConsumer) Stop(ctx context.Context) error {
 	c.isRunning = false
-	c.logger.Info("Consumer SQS parado com sucesso.")
+	c.logger.Info("SQS consumer stopped successfully.")
 	return nil
 }
 
 func (c *SQSConsumer) processMessage(ctx context.Context, msg types.Message) error {
 	if msg.Body == nil {
-		return errors.New("mensagem SQS com corpo vazio")
+		return errors.New("empty body in SQS message")
 	}
-
 	var envelope SQSMessageEnvelope
 	if err := json.Unmarshal([]byte(*msg.Body), &envelope); err != nil {
-		c.logger.Error("Erro ao desserializar envelope SQS", "error", err)
+		c.logger.Error("Error to deserialize SQS envelope", "error", err)
 		return err
 	}
-
 	messageID := envelope.MessageID
 	if messageID == "" && msg.MessageId != nil {
 		messageID = *msg.MessageId
 	}
-
-	c.logger.Info("Processando transação via SQS",
+	c.logger.Info("Processing transaction with SQS",
 		"message_id", messageID,
 		"external_transaction_id", envelope.Data.ExternalTransactionID,
 		"provider_id", envelope.Data.ProviderID,
 	)
-
-	// 1. Calcular o hash do payload para auditoria/verificação no Inbox
 	payloadHash, err := wagerdomain.ComputePayloadHash(
 		envelope.Data.ProviderID,
 		envelope.Data.ExternalTransactionID,
@@ -126,13 +118,10 @@ func (c *SQSConsumer) processMessage(ctx context.Context, msg types.Message) err
 	if err != nil {
 		return err
 	}
-
-	// 2. Mapear para o input do UseCase
 	idempotencyKey := envelope.Data.IdempotencyKey
 	if idempotencyKey == "" {
 		idempotencyKey = envelope.Data.ProviderID + ":" + envelope.Data.ExternalTransactionID
 	}
-
 	input := usecase.CreateWagerTransactionInput{
 		ProviderID:                     envelope.Data.ProviderID,
 		ExternalTransactionID:          envelope.Data.ExternalTransactionID,
@@ -149,13 +138,9 @@ func (c *SQSConsumer) processMessage(ctx context.Context, msg types.Message) err
 		ConsumerName:                   &c.consumerName,
 		PayloadHash:                    &payloadHash,
 	}
-
-	// 3. Executar o UseCase repassando o controle do Inbox (messageID e consumerName)
-	// (Recomenda-se expor um método no usecase ou repositório que envolva a gravação do inbox + transação de aposta em uma única transação SQL)
 	_, err = c.createWagerTransaction.Execute(ctx, input)
 	if err != nil {
 		return err
 	}
-
 	return nil
 }

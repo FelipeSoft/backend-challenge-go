@@ -7,9 +7,12 @@ import (
 	"time"
 
 	"github.com/FelipeSoft/backend-challenge-go/internal/wager/domain"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+var appNamespace = uuid.Must(uuid.Parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8"))
 
 var (
 	ErrConflict = errors.New("conflict: idempotency key or external transaction already used with a different payload")
@@ -325,15 +328,22 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 	}
 
 	insertOutboxQuery := `
-		INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, occurred_at)
-		VALUES ($1, $2, $3, $4, $5);
+		INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, occurred_at, event_id, correlation_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7);
 	`
+	var correlationID any
+    if *wt.RoundID() != "" {
+        correlationID = uuid.NewSHA1(appNamespace, []byte(*wt.RoundID())).String()
+    } else {
+        correlationID = uuid.NewSHA1(appNamespace, []byte(wt.ID())).String()
+    }
 	eventType := "WagerTransactionProcessed"
 	if wt.State() == domain.StateRejected {
 		eventType = "WagerTransactionRejected"
 	} else if wt.State() == domain.StatePendingReference {
 		eventType = "WagerTransactionPendingReference"
 	}
+	eventId := uuid.NewSHA1(appNamespace, []byte(*wt.IdempotencyKey())).String()
 	eventPayload := fmt.Sprintf(`{"transactionId": "%s", "walletId": "%s", "status": "%s"}`, wt.ID(), wt.WalletID(), wt.State())
 	_, err = tx.Exec(ctx, insertOutboxQuery,
 		"WagerTransaction",
@@ -341,6 +351,8 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 		eventType,
 		eventPayload,
 		wt.CreatedAt(),
+		eventId,
+		correlationID,
 	)
 	if err != nil {
 		return PersistResult{}, fmt.Errorf("failed to insert outbox event: %w", err)

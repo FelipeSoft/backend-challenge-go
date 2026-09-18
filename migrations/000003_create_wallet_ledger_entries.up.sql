@@ -1,5 +1,5 @@
 CREATE TABLE wallet_ledger_entries (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     wallet_id UUID NOT NULL REFERENCES wallets(id),
     transaction_id UUID NOT NULL REFERENCES wager_transactions(id),
     direction VARCHAR(10) NOT NULL CHECK (direction IN ('DEBIT', 'CREDIT')),
@@ -12,4 +12,4 @@ CREATE TABLE wallet_ledger_entries (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CONSTRAINT uk_wallet_transaction_ledger UNIQUE (wallet_id, transaction_id)
 );
-CREATE INDEX idx_wallet_ledger_wallet_id ON wallet_ledger_entries(wallet_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_ledger_wallet_id ON wallet_ledger_entries(wallet_id);

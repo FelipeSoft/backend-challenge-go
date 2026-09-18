@@ -1,5 +1,5 @@
 CREATE TABLE wager_transactions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     provider_id VARCHAR(100) NULL,
     external_transaction_id VARCHAR(255) NULL,
     idempotency_key VARCHAR(255) NULL,
@@ -21,6 +21,7 @@ CREATE TABLE wager_transactions (
     CONSTRAINT uk_provider_external_tx UNIQUE (provider_id, external_transaction_id),
     CONSTRAINT uk_idempotency_key UNIQUE (idempotency_key)
 );
-CREATE INDEX idx_wager_transactions_wallet_id ON wager_transactions(wallet_id);
-CREATE INDEX idx_wager_transactions_status ON wager_transactions(status);
-CREATE INDEX idx_wager_transactions_ref ON wager_transactions(provider_id, reference_external_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_wager_transactions_wallet_id ON wager_transactions(wallet_id);
+CREATE INDEX IF NOT EXISTS idx_wager_transactions_status ON wager_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_wager_transactions_ref ON wager_transactions(provider_id, reference_external_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_wager_transactions_pending_ref ON wager_transactions(status, created_at) WHERE status = 'PENDING_REFERENCE';

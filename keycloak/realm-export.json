@@ -1,0 +1,20 @@
+{
+  "id": "jungle-gaming",
+  "realm": "jungle-gaming",
+  "enabled": true,
+  "displayName": "Jungle Gaming Realm",
+  "clients": [
+    {
+      "clientId": "backend-client",
+      "secret": "my-secret-key",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "publicClient": false,
+      "protocol": "openid-connect"
+    }
+  ]
+}

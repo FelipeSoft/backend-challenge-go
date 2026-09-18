@@ -107,17 +107,17 @@ func (s *GetWagerTransaction) Execute(ctx context.Context, transactionId string)
 		&updatedAt,
 	)
 	if err != nil {
-		return GetWagerTransactionResponse{}, fmt.Errorf("transação não encontrada: %w", err)
+		return GetWagerTransactionResponse{}, fmt.Errorf("transaction not found: %w", err)
 	}
 	amountMoney, err := domain.NewMoneyFromInt(amountValue, amountCurrency)
 	if err != nil {
-		return GetWagerTransactionResponse{}, fmt.Errorf("erro ao criar money para amount: %w", err)
+		return GetWagerTransactionResponse{}, fmt.Errorf("error to create money to amount: %w", err)
 	}
 	var resultAmount *domain.Money
 	if resultAmountValue != nil && resultAmountCurrency != nil {
 		rm, err := domain.NewMoneyFromInt(*resultAmountValue, *resultAmountCurrency)
 		if err != nil {
-			return GetWagerTransactionResponse{}, fmt.Errorf("erro ao criar money para resultAmount: %w", err)
+			return GetWagerTransactionResponse{}, fmt.Errorf("error to create money to resultAmount: %w", err)
 		}
 		resultAmount = &rm
 	}

@@ -7,8 +7,11 @@ import (
 	"time"
 
 	domain "github.com/FelipeSoft/backend-challenge-go/internal/wallet/domain/wallet"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+var appNamespace = uuid.Must(uuid.Parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8"))
 
 type WalletRepository interface {
 	CreateWallet(ctx context.Context, wallet domain.Wallet, wagerTransactionId string, payloadHash string) (string, error)
@@ -25,7 +28,7 @@ func NewPostgresWalletRepository(db *pgxpool.Pool) WalletRepository {
 func (r *postgresWalletRepo) CreateWallet(ctx context.Context, wallet domain.Wallet, wagerTransactionId string, payloadHash string) (string, error) {
 	dbTx, err := r.db.Begin(ctx)
 	if err != nil {
-		return "", fmt.Errorf("falha ao iniciar transação SQL: %w", err)
+		return "", fmt.Errorf("fail to begin SQL transaction: %w", err)
 	}
 	defer dbTx.Rollback(ctx)
 	walletID := wallet.ID()
@@ -39,7 +42,7 @@ func (r *postgresWalletRepo) CreateWallet(ctx context.Context, wallet domain.Wal
 	`
 	_, err = dbTx.Exec(ctx, queryWallet, walletID, playerID, currency, amount, now, now)
 	if err != nil {
-		return "", fmt.Errorf("erro ao inserir carteira (possível conflito de player/currency): %w", err)
+		return "", fmt.Errorf("%w", err)
 	}
 	if amount > 0 {
 		queryTx := `
@@ -51,7 +54,7 @@ func (r *postgresWalletRepo) CreateWallet(ctx context.Context, wallet domain.Wal
 		`
 		_, err = dbTx.Exec(ctx, queryTx, wagerTransactionId, walletID, playerID, amount, currency, payloadHash, now, now)
 		if err != nil {
-			return "", fmt.Errorf("erro ao inserir wager transaction OPENING: %w", err)
+			return "", fmt.Errorf("error to insert wager transaction OPENING: %w", err)
 		}
 		queryLedger := `
 			INSERT INTO wallet_ledger_entries (
@@ -62,7 +65,7 @@ func (r *postgresWalletRepo) CreateWallet(ctx context.Context, wallet domain.Wal
 		`
 		_, err = dbTx.Exec(ctx, queryLedger, walletID, wagerTransactionId, amount, currency, currency, now)
 		if err != nil {
-			return "", fmt.Errorf("erro ao inserir ledger entry: %w", err)
+			return "", fmt.Errorf("error to insert ledger entry: %w", err)
 		}
 		processedEventPayload, _ := json.Marshal(map[string]interface{}{
 			"transactionId": wagerTransactionId,
@@ -77,19 +80,29 @@ func (r *postgresWalletRepo) CreateWallet(ctx context.Context, wallet domain.Wal
 			"balanceAfter":  amount,
 			"walletVersion": 1,
 		})
+		wagerTransactionEventId := uuid.NewSHA1(appNamespace, []byte(wagerTransactionId+"-WagerTransactionProcessed")).String()
+		walletEventId := uuid.NewSHA1(appNamespace, []byte(wagerTransactionId+"-WalletBalanceChanged")).String()
 		queryOutbox := `
-			INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, occurred_at)
-			VALUES 
-				('Wallet', $1, 'WagerTransactionProcessed', $2, $4),
-				('Wallet', $1, 'WalletBalanceChanged', $3, $4);
-		`
-		_, err = dbTx.Exec(ctx, queryOutbox, walletID, processedEventPayload, balanceChangedPayload, now)
+            INSERT INTO outbox (event_id, correlation_id, aggregate_type, aggregate_id, event_type, payload, occurred_at)
+            VALUES 
+                ($5, $7, 'WagerTransaction', $1, 'WagerTransactionProcessed', $2, $4),
+                ($6, $7, 'Wallet', $1, 'WalletBalanceChanged', $3, $4);
+        `
+		_, err = dbTx.Exec(ctx, queryOutbox,
+			walletID,
+			processedEventPayload,
+			balanceChangedPayload,
+			now,
+			wagerTransactionEventId,
+			walletEventId,
+			wagerTransactionId,
+		)
 		if err != nil {
-			return "", fmt.Errorf("erro ao inserir registros na outbox: %w", err)
+			return "", fmt.Errorf("error to insert outbox lines: %w", err)
 		}
 	}
 	if err := dbTx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("falha ao commitar transação de abertura: %w", err)
+		return "", fmt.Errorf("fail to commit opening transaction: %w", err)
 	}
 	return walletID, nil
 }

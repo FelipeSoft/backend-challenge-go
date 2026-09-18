@@ -12,6 +12,7 @@ type Config struct {
 	Port                string
 	DatabaseURL         string
 	SQSQueueURL         string
+	OutboxQueueURL      string
 }
 
 var ConfigModule = fx.Options(
@@ -25,6 +26,7 @@ func Load() *Config {
 		Port:                os.Getenv("PORT"),
 		DatabaseURL:         os.Getenv("DATABASE_URL"),
 		SQSQueueURL:         os.Getenv("SQS_QUEUE_URL"),
+		OutboxQueueURL:      os.Getenv("OUTBOX_QUEUE_URL"),
 	}
 	return cfg
 }

@@ -21,6 +21,7 @@ func main() {
 	fx.New(
 		platform.ConfigModule,
 		platform.DatabaseModule,
+		platform.AuthModule,
 		delivery.HttpModule,
 		wallet.Module,
 		wager.Module,
