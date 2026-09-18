@@ -53,12 +53,10 @@ func NewInternalOpening(walletID, playerID string, amount domain.Money, now time
 	if walletID == "" || playerID == "" {
 		return WagerTransaction{}, ErrOpeningFieldsRequired
 	}
-
 	id, err := uuid.NewV7()
 	if err != nil {
 		return WagerTransaction{}, ErrOpeningFieldsRequired
 	}
-
 	return WagerTransaction{
 		id:        id.String(),
 		walletID:  walletID,

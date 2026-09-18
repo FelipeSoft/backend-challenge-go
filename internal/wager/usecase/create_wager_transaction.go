@@ -26,6 +26,9 @@ type CreateWagerTransactionInput struct {
 	MoneyCurrency                  string
 	IdempotencyKey                 string
 	ReferenceExternalTransactionId *string
+	MessageID                      *string
+	ConsumerName                   *string
+	PayloadHash                    *string
 }
 
 type CreateWagerTransactionOutput struct {
@@ -85,7 +88,7 @@ func (uc *CreateWagerTransaction) Execute(ctx context.Context, input CreateWager
 	if err != nil {
 		return CreateWagerTransactionOutput{}, err
 	}
-	result, err := uc.wagerRepository.Persist(ctx, &wagerTx)
+	result, err := uc.wagerRepository.Persist(ctx, &wagerTx, input.MessageID, input.ConsumerName)
 	if err != nil {
 		return CreateWagerTransactionOutput{}, err
 	}

@@ -10,4 +10,6 @@ coverage/
 Dockerfile
 docker-compose*.yml
 
+localstack-data
+
 README.md

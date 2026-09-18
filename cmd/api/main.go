@@ -28,7 +28,7 @@ func main() {
 		fx.Invoke(func(lc fx.Lifecycle, r *gin.Engine) {
 			port := os.Getenv("PORT")
 			if port == "" {
-				port = "4000"
+				panic("missing port")
 			}
 			srv := &http.Server{
 				Addr:    ":" + port,

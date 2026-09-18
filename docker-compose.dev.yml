@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -11,11 +13,16 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   localstack:
-    image: localstack/localstack:latest
+    image: localstack/localstack:4.14.0
     ports:
       - "4566:4566"
+      - "4510-4559:4510-4559"
     environment:
       - SERVICES=sqs
+      - DEBUG=1
+    volumes:
+      - "./localstack-data:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
 
   keycloak:
     image: quay.io/keycloak/keycloak:24.0.0
@@ -28,3 +35,4 @@ services:
 
 volumes:
   pgdata:
+  localstack-data:

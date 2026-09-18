@@ -16,7 +16,7 @@ var (
 )
 
 type WagerRepository interface {
-	Persist(ctx context.Context, wagerTransaction *domain.WagerTransaction) (PersistResult, error)
+	Persist(ctx context.Context, wt *domain.WagerTransaction, msgId, consumerName *string) (PersistResult, error)
 }
 
 type PersistResult struct {
@@ -35,12 +35,63 @@ func NewPostgresWagerRepository(db *pgxpool.Pool) WagerRepository {
 	return &postgresWagerRepository{db: db}
 }
 
-func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerTransaction) (PersistResult, error) {
+func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerTransaction, msgId, consumerName *string) (PersistResult, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return PersistResult{}, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if msgId != nil && consumerName != nil {
+		var exists bool
+		checkInboxQuery := `SELECT EXISTS(SELECT 1 FROM inbox WHERE consumer_name = $1 AND message_id = $2)`
+		err = tx.QueryRow(ctx, checkInboxQuery, *consumerName, *msgId).Scan(&exists)
+		if err != nil {
+			return PersistResult{}, fmt.Errorf("failed to check inbox: %w", err)
+		}
+		if exists {
+			var existingID string
+			var existingStatus domain.TransactionState
+			var existingBalanceAmount int64
+			var existingBalanceCurrency string
+			queryReplay := `
+				SELECT wt.id, wt.status, w.balance_amount, w.currency
+				FROM wager_transactions wt
+				JOIN wallets w ON w.id = wt.wallet_id
+				WHERE wt.provider_id = $1 AND wt.external_transaction_id = $2
+				LIMIT 1
+			`
+			var providerVal any
+			if wt.Provider() != nil {
+				providerVal = *wt.Provider()
+			}
+			var extIDVal any
+			if wt.ExternalID() != nil {
+				extIDVal = *wt.ExternalID()
+			}
+			err = tx.QueryRow(ctx, queryReplay, providerVal, extIDVal).Scan(
+				&existingID, &existingStatus, &existingBalanceAmount, &existingBalanceCurrency,
+			)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return PersistResult{IdempotentReplay: true}, nil
+				}
+				return PersistResult{}, fmt.Errorf("failed to fetch replayed transaction from inbox: %w", err)
+			}
+			balanceStr := fmt.Sprintf("%.2f", float64(existingBalanceAmount)/100)
+			return PersistResult{
+				TransactionID:    existingID,
+				Status:           existingStatus,
+				BalanceAmount:    balanceStr,
+				BalanceCurrency:  existingBalanceCurrency,
+				IdempotentReplay: true,
+			}, nil
+		}
+		insertInboxQuery := `INSERT INTO inbox (consumer_name, message_id, processed_at) VALUES ($1, $2, NOW())`
+		_, err = tx.Exec(ctx, insertInboxQuery, *consumerName, *msgId)
+		if err != nil {
+			return PersistResult{}, fmt.Errorf("failed to insert into inbox: %w", err)
+		}
+	}
 	var (
 		existingID              string
 		existingPayloadHash     string
@@ -93,6 +144,7 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return PersistResult{}, fmt.Errorf("failed to check existing transaction: %w", err)
 	}
+
 	isReversal := wt.Type() == domain.TypeRefund || wt.Type() == domain.TypeRollback
 	var refID string
 	var refStatus domain.TransactionState
@@ -158,11 +210,13 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 		}
 		return PersistResult{}, fmt.Errorf("failed to lock wallet: %w", err)
 	}
+
 	txAmountInt := wt.Amount().Amount()
 	txCurrency := wt.Amount().Currency()
 	if walletCurrency != txCurrency {
 		return PersistResult{}, errors.New("currency mismatch between wallet and transaction")
 	}
+
 	var newBalance int64 = currentBalance
 	var direction string
 	if wt.State() != domain.StatePendingReference {
@@ -199,6 +253,7 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 			return PersistResult{}, fmt.Errorf("unsupported transaction type: %v", wt.Type())
 		}
 	}
+
 	insertTxQuery := `
 		INSERT INTO wager_transactions (
 			id, provider_id, external_transaction_id, idempotency_key, payload_hash,
@@ -231,6 +286,7 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 	if err != nil {
 		return PersistResult{}, fmt.Errorf("failed to insert wager transaction: %w", err)
 	}
+
 	if wt.State() != domain.StatePendingReference && direction != "" {
 		updateWalletQuery := `
 			UPDATE wallets
@@ -244,6 +300,7 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 		if res.RowsAffected() == 0 {
 			return PersistResult{}, errors.New("concurrency conflict updating wallet")
 		}
+
 		insertLedgerQuery := `
 			INSERT INTO wallet_ledger_entries (
 				wallet_id, transaction_id, direction, amount_value, amount_currency,
@@ -267,7 +324,6 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 		}
 	}
 
-	// 7. Outbox Event
 	insertOutboxQuery := `
 		INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, occurred_at)
 		VALUES ($1, $2, $3, $4, $5);
@@ -278,7 +334,6 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 	} else if wt.State() == domain.StatePendingReference {
 		eventType = "WagerTransactionPendingReference"
 	}
-
 	eventPayload := fmt.Sprintf(`{"transactionId": "%s", "walletId": "%s", "status": "%s"}`, wt.ID(), wt.WalletID(), wt.State())
 	_, err = tx.Exec(ctx, insertOutboxQuery,
 		"WagerTransaction",
