@@ -8,6 +8,7 @@ import (
 var (
 	ErrOpeningFieldsRequired     = errors.New("id, walletID and playerID are required for opening transaction")
 	ErrOpeningNotAllowedExternal = errors.New("OPENING type is reserved for internal wallet creation and cannot be created via external channels")
+	ErrKindLossWithoutZeroAmount = errors.New("LOSS kind amount should be zero")
 	ErrMissingExternalFields     = errors.New("missing mandatory fields for external transaction")
 	ErrUnexpectedOrTerminalState = errors.New("current state is unexpected or terminal")
 )

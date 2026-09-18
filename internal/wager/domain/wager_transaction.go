@@ -28,7 +28,6 @@ const (
 	StateFailed           TransactionState = "FAILED"
 )
 
-// WagerTransaction representa o agregado de transações de wagering e operações de carteira.
 type WagerTransaction struct {
 	id                             string
 	externalID                     *string
@@ -72,7 +71,6 @@ func NewInternalOpening(walletID, playerID string, amount domain.Money, now time
 	}, nil
 }
 
-// NewExternalTransaction cria operações de provedores externos (BET, WIN, LOSS, REFUND, ROLLBACK).
 func NewExternalTransaction(
 	id string,
 	externalID, provider, idempotencyKey, payloadHash string,
@@ -88,6 +86,13 @@ func NewExternalTransaction(
 	}
 	if id == "" || externalID == "" || provider == "" || idempotencyKey == "" || payloadHash == "" || walletID == "" || playerID == "" {
 		return WagerTransaction{}, ErrMissingExternalFields
+	}
+	zeroMoney, err := domain.NewMoneyFromInt(0, amount.Currency())
+	if err != nil {
+		return WagerTransaction{}, ErrOpeningNotAllowedExternal
+	}
+	if txType == TypeLoss && !amount.Equals(zeroMoney) {
+		return WagerTransaction{}, ErrKindLossWithoutZeroAmount
 	}
 	return WagerTransaction{
 		id:                             id,

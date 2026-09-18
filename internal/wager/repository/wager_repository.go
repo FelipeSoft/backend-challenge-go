@@ -20,11 +20,11 @@ type WagerRepository interface {
 }
 
 type PersistResult struct {
-	TransactionID      string
-	Status             domain.TransactionState
-	BalanceAmount      string
-	BalanceCurrency    string
-	IdempotentReplay   bool
+	TransactionID    string
+	Status           domain.TransactionState
+	BalanceAmount    string
+	BalanceCurrency  string
+	IdempotentReplay bool
 }
 
 type postgresWagerRepository struct {
@@ -41,8 +41,6 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 		return PersistResult{}, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
-
-	// 1. Verificação de Idempotência (Inalterada)
 	var (
 		existingID              string
 		existingPayloadHash     string
@@ -95,39 +93,33 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return PersistResult{}, fmt.Errorf("failed to check existing transaction: %w", err)
 	}
-
-	// 2. SE FOR REFUND ou ROLLBACK: Validar a transação referenciada
 	isReversal := wt.Type() == domain.TypeRefund || wt.Type() == domain.TypeRollback
-	
+	var refID string
+	var refStatus domain.TransactionState
+	var refAmount int64
+	var refPlayerID, refWalletID, refCurrency, refKind string
+
 	if isReversal {
-		refExtID := wt.ReferenceExternalTransactionID() // Supondo que exista esse método no domínio
+		refExtID := wt.ReferenceExternalTransactionID()
 		if refExtID == nil {
 			return PersistResult{}, errors.New("referenceExternalTransactionId is required for refunds and rollbacks")
 		}
 
-		var refID string
-		var refStatus domain.TransactionState
-		var refAmount int64
-		var refPlayerID, refWalletID, refCurrency string
-
 		queryRef := `
-			SELECT id, status, amount_value, player_id, wallet_id, amount_currency
+			SELECT id, status, amount_value, player_id, wallet_id, amount_currency, kind
 			FROM wager_transactions
 			WHERE provider_id = $1 AND external_transaction_id = $2
 			LIMIT 1;
 		`
 		err = tx.QueryRow(ctx, queryRef, providerVal, *refExtID).Scan(
-			&refID, &refStatus, &refAmount, &refPlayerID, &refWalletID, &refCurrency,
+			&refID, &refStatus, &refAmount, &refPlayerID, &refWalletID, &refCurrency, &refKind,
 		)
 
 		if errors.Is(err, pgx.ErrNoRows) {
-			// REGRA DO DESAFIO: Se a referência não chegou, persiste como PENDING_REFERENCE
-			// O worker em background vai tentar resolver depois.
-			wt.TransitionTo(domain.StatePendingReference, nil, time.Now()) 
+			wt.TransitionTo(domain.StatePendingReference, nil, time.Now())
 		} else if err != nil {
 			return PersistResult{}, fmt.Errorf("failed to check reference transaction: %w", err)
 		} else {
-			// A referência existe. Validar coerência:
 			if refStatus != domain.StateProcessed {
 				return PersistResult{}, errors.New("referenced transaction is not in PROCESSED state")
 			}
@@ -137,8 +129,6 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 			if refAmount != wt.Amount().Amount() || refCurrency != wt.Amount().Currency() {
 				return PersistResult{}, errors.New("reference mismatch: amount or currency differs (partial refunds not allowed)")
 			}
-			
-			// Validar se já existe outra reversão bem-sucedida para esta mesma referência
 			var countReversals int
 			queryCheckRev := `
 				SELECT COUNT(1) FROM wager_transactions 
@@ -152,7 +142,6 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 		}
 	}
 
-	// 3. Lock da Carteira (Inalterado)
 	var currentBalance int64
 	var walletCurrency string
 	var walletVersion int64
@@ -169,18 +158,13 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 		}
 		return PersistResult{}, fmt.Errorf("failed to lock wallet: %w", err)
 	}
-
 	txAmountInt := wt.Amount().Amount()
 	txCurrency := wt.Amount().Currency()
 	if walletCurrency != txCurrency {
 		return PersistResult{}, errors.New("currency mismatch between wallet and transaction")
 	}
-
-	// 4. Cálculo do novo saldo com base no tipo
 	var newBalance int64 = currentBalance
 	var direction string
-
-	// Se estiver PENDING_REFERENCE, a movimentação financeira NÃO ocorre agora (ocorre só quando o worker resolver)
 	if wt.State() != domain.StatePendingReference {
 		switch wt.Type() {
 		case domain.TypeBet:
@@ -189,9 +173,22 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 				return PersistResult{}, errors.New("insufficient funds")
 			}
 			newBalance = currentBalance - txAmountInt
-		case domain.TypeWin, domain.TypeRefund, domain.TypeRollback:
+		case domain.TypeWin, domain.TypeRefund:
 			direction = "CREDIT"
 			newBalance = currentBalance + txAmountInt
+		case domain.TypeRollback:
+			if refKind == string(domain.TypeBet) {
+				direction = "CREDIT"
+				newBalance = currentBalance + txAmountInt
+			} else if refKind == string(domain.TypeWin) || refKind == string(domain.TypeRefund) {
+				direction = "DEBIT"
+				if currentBalance < txAmountInt {
+					return PersistResult{}, errors.New("insufficient funds for rollback")
+				}
+				newBalance = currentBalance - txAmountInt
+			} else {
+				return PersistResult{}, fmt.Errorf("unsupported reference kind for rollback: %s", refKind)
+			}
 		case domain.TypeLoss:
 			direction = ""
 			newBalance = currentBalance
@@ -202,8 +199,6 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 			return PersistResult{}, fmt.Errorf("unsupported transaction type: %v", wt.Type())
 		}
 	}
-
-	// 5. Inserir a Transação (incluindo o reference_external_transaction_id)
 	insertTxQuery := `
 		INSERT INTO wager_transactions (
 			id, provider_id, external_transaction_id, idempotency_key, payload_hash,
@@ -236,8 +231,6 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 	if err != nil {
 		return PersistResult{}, fmt.Errorf("failed to insert wager transaction: %w", err)
 	}
-
-	// 6. Atualizar Carteira e Ledger apenas se não estiver pendente de referência
 	if wt.State() != domain.StatePendingReference && direction != "" {
 		updateWalletQuery := `
 			UPDATE wallets
@@ -251,7 +244,6 @@ func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerT
 		if res.RowsAffected() == 0 {
 			return PersistResult{}, errors.New("concurrency conflict updating wallet")
 		}
-
 		insertLedgerQuery := `
 			INSERT INTO wallet_ledger_entries (
 				wallet_id, transaction_id, direction, amount_value, amount_currency,
