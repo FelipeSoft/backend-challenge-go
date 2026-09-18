@@ -1,0 +1,314 @@
+package repository
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/FelipeSoft/backend-challenge-go/internal/wager/domain"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+var (
+	ErrConflict = errors.New("conflict: idempotency key or external transaction already used with a different payload")
+)
+
+type WagerRepository interface {
+	Persist(ctx context.Context, wagerTransaction *domain.WagerTransaction) (PersistResult, error)
+}
+
+type PersistResult struct {
+	TransactionID      string
+	Status             domain.TransactionState
+	BalanceAmount      string
+	BalanceCurrency    string
+	IdempotentReplay   bool
+}
+
+type postgresWagerRepository struct {
+	db *pgxpool.Pool
+}
+
+func NewPostgresWagerRepository(db *pgxpool.Pool) WagerRepository {
+	return &postgresWagerRepository{db: db}
+}
+
+func (r *postgresWagerRepository) Persist(ctx context.Context, wt *domain.WagerTransaction) (PersistResult, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return PersistResult{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Verificação de Idempotência (Inalterada)
+	var (
+		existingID              string
+		existingPayloadHash     string
+		existingStatus          domain.TransactionState
+		existingBalanceAmount   int64
+		existingBalanceCurrency string
+	)
+	queryCheck := `
+		SELECT wt.id, wt.payload_hash, wt.status, w.balance_amount, w.currency
+		FROM wager_transactions wt
+		JOIN wallets w ON w.id = wt.wallet_id
+		WHERE ($1::text IS NOT NULL AND wt.idempotency_key = $1)
+		   OR ($2::text IS NOT NULL AND $3::text IS NOT NULL AND wt.provider_id = $2 AND wt.external_transaction_id = $3)
+		LIMIT 1;
+	`
+	var idempotencyKeyVal, providerVal, externalIDVal any
+	if wt.IdempotencyKey() != nil {
+		idempotencyKeyVal = *wt.IdempotencyKey()
+	}
+	if wt.Provider() != nil {
+		providerVal = *wt.Provider()
+	}
+	if wt.ExternalID() != nil {
+		externalIDVal = *wt.ExternalID()
+	}
+
+	err = tx.QueryRow(ctx, queryCheck, idempotencyKeyVal, providerVal, externalIDVal).Scan(
+		&existingID,
+		&existingPayloadHash,
+		&existingStatus,
+		&existingBalanceAmount,
+		&existingBalanceCurrency,
+	)
+	if err == nil {
+		var incomingHash string
+		if wt.PayloadHash() != nil {
+			incomingHash = *wt.PayloadHash()
+		}
+		if existingPayloadHash != incomingHash {
+			return PersistResult{}, ErrConflict
+		}
+		balanceStr := fmt.Sprintf("%.2f", float64(existingBalanceAmount)/100)
+		return PersistResult{
+			TransactionID:    existingID,
+			Status:           existingStatus,
+			BalanceAmount:    balanceStr,
+			BalanceCurrency:  existingBalanceCurrency,
+			IdempotentReplay: true,
+		}, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return PersistResult{}, fmt.Errorf("failed to check existing transaction: %w", err)
+	}
+
+	// 2. SE FOR REFUND ou ROLLBACK: Validar a transação referenciada
+	isReversal := wt.Type() == domain.TypeRefund || wt.Type() == domain.TypeRollback
+	
+	if isReversal {
+		refExtID := wt.ReferenceExternalTransactionID() // Supondo que exista esse método no domínio
+		if refExtID == nil {
+			return PersistResult{}, errors.New("referenceExternalTransactionId is required for refunds and rollbacks")
+		}
+
+		var refID string
+		var refStatus domain.TransactionState
+		var refAmount int64
+		var refPlayerID, refWalletID, refCurrency string
+
+		queryRef := `
+			SELECT id, status, amount_value, player_id, wallet_id, amount_currency
+			FROM wager_transactions
+			WHERE provider_id = $1 AND external_transaction_id = $2
+			LIMIT 1;
+		`
+		err = tx.QueryRow(ctx, queryRef, providerVal, *refExtID).Scan(
+			&refID, &refStatus, &refAmount, &refPlayerID, &refWalletID, &refCurrency,
+		)
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			// REGRA DO DESAFIO: Se a referência não chegou, persiste como PENDING_REFERENCE
+			// O worker em background vai tentar resolver depois.
+			wt.TransitionTo(domain.StatePendingReference, nil, time.Now()) 
+		} else if err != nil {
+			return PersistResult{}, fmt.Errorf("failed to check reference transaction: %w", err)
+		} else {
+			// A referência existe. Validar coerência:
+			if refStatus != domain.StateProcessed {
+				return PersistResult{}, errors.New("referenced transaction is not in PROCESSED state")
+			}
+			if refPlayerID != wt.PlayerID() || refWalletID != wt.WalletID() {
+				return PersistResult{}, errors.New("reference mismatch: player or wallet differs")
+			}
+			if refAmount != wt.Amount().Amount() || refCurrency != wt.Amount().Currency() {
+				return PersistResult{}, errors.New("reference mismatch: amount or currency differs (partial refunds not allowed)")
+			}
+			
+			// Validar se já existe outra reversão bem-sucedida para esta mesma referência
+			var countReversals int
+			queryCheckRev := `
+				SELECT COUNT(1) FROM wager_transactions 
+				WHERE provider_id = $1 AND reference_external_transaction_id = $2 
+				  AND kind = $3 AND status = 'PROCESSED'
+			`
+			_ = tx.QueryRow(ctx, queryCheckRev, providerVal, *refExtID, string(wt.Type())).Scan(&countReversals)
+			if countReversals > 0 {
+				return PersistResult{}, errors.New("transaction already fully refunded/rolled back")
+			}
+		}
+	}
+
+	// 3. Lock da Carteira (Inalterado)
+	var currentBalance int64
+	var walletCurrency string
+	var walletVersion int64
+	lockWalletQuery := `
+		SELECT balance_amount, currency, version
+		FROM wallets
+		WHERE id = $1
+		FOR UPDATE;
+	`
+	err = tx.QueryRow(ctx, lockWalletQuery, wt.WalletID()).Scan(&currentBalance, &walletCurrency, &walletVersion)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PersistResult{}, errors.New("wallet not found")
+		}
+		return PersistResult{}, fmt.Errorf("failed to lock wallet: %w", err)
+	}
+
+	txAmountInt := wt.Amount().Amount()
+	txCurrency := wt.Amount().Currency()
+	if walletCurrency != txCurrency {
+		return PersistResult{}, errors.New("currency mismatch between wallet and transaction")
+	}
+
+	// 4. Cálculo do novo saldo com base no tipo
+	var newBalance int64 = currentBalance
+	var direction string
+
+	// Se estiver PENDING_REFERENCE, a movimentação financeira NÃO ocorre agora (ocorre só quando o worker resolver)
+	if wt.State() != domain.StatePendingReference {
+		switch wt.Type() {
+		case domain.TypeBet:
+			direction = "DEBIT"
+			if currentBalance < txAmountInt {
+				return PersistResult{}, errors.New("insufficient funds")
+			}
+			newBalance = currentBalance - txAmountInt
+		case domain.TypeWin, domain.TypeRefund, domain.TypeRollback:
+			direction = "CREDIT"
+			newBalance = currentBalance + txAmountInt
+		case domain.TypeLoss:
+			direction = ""
+			newBalance = currentBalance
+		case domain.TypeOpening:
+			direction = "CREDIT"
+			newBalance = currentBalance + txAmountInt
+		default:
+			return PersistResult{}, fmt.Errorf("unsupported transaction type: %v", wt.Type())
+		}
+	}
+
+	// 5. Inserir a Transação (incluindo o reference_external_transaction_id)
+	insertTxQuery := `
+		INSERT INTO wager_transactions (
+			id, provider_id, external_transaction_id, idempotency_key, payload_hash,
+			wallet_id, player_id, round_id, game_id, kind, amount_value, amount_currency, 
+			reference_external_transaction_id, status, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15);
+	`
+	var refExtIDVal any
+	if isReversal {
+		refExtIDVal = wt.ReferenceExternalTransactionID()
+	}
+
+	_, err = tx.Exec(ctx, insertTxQuery,
+		wt.ID(),
+		wt.Provider(),
+		wt.ExternalID(),
+		wt.IdempotencyKey(),
+		wt.PayloadHash(),
+		wt.WalletID(),
+		wt.PlayerID(),
+		wt.RoundID(),
+		wt.GameID(),
+		string(wt.Type()),
+		txAmountInt,
+		txCurrency,
+		refExtIDVal,
+		string(wt.State()),
+		wt.CreatedAt(),
+	)
+	if err != nil {
+		return PersistResult{}, fmt.Errorf("failed to insert wager transaction: %w", err)
+	}
+
+	// 6. Atualizar Carteira e Ledger apenas se não estiver pendente de referência
+	if wt.State() != domain.StatePendingReference && direction != "" {
+		updateWalletQuery := `
+			UPDATE wallets
+			SET balance_amount = $1, version = version + 1, updated_at = NOW()
+			WHERE id = $2 AND version = $3;
+		`
+		res, err := tx.Exec(ctx, updateWalletQuery, newBalance, wt.WalletID(), walletVersion)
+		if err != nil {
+			return PersistResult{}, fmt.Errorf("failed to update wallet balance: %w", err)
+		}
+		if res.RowsAffected() == 0 {
+			return PersistResult{}, errors.New("concurrency conflict updating wallet")
+		}
+
+		insertLedgerQuery := `
+			INSERT INTO wallet_ledger_entries (
+				wallet_id, transaction_id, direction, amount_value, amount_currency,
+				balance_before_value, balance_before_currency, balance_after_value, balance_after_currency, created_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+		`
+		_, err = tx.Exec(ctx, insertLedgerQuery,
+			wt.WalletID(),
+			wt.ID(),
+			direction,
+			txAmountInt,
+			txCurrency,
+			currentBalance,
+			walletCurrency,
+			newBalance,
+			walletCurrency,
+			wt.CreatedAt(),
+		)
+		if err != nil {
+			return PersistResult{}, fmt.Errorf("failed to insert ledger entry: %w", err)
+		}
+	}
+
+	// 7. Outbox Event
+	insertOutboxQuery := `
+		INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, occurred_at)
+		VALUES ($1, $2, $3, $4, $5);
+	`
+	eventType := "WagerTransactionProcessed"
+	if wt.State() == domain.StateRejected {
+		eventType = "WagerTransactionRejected"
+	} else if wt.State() == domain.StatePendingReference {
+		eventType = "WagerTransactionPendingReference"
+	}
+
+	eventPayload := fmt.Sprintf(`{"transactionId": "%s", "walletId": "%s", "status": "%s"}`, wt.ID(), wt.WalletID(), wt.State())
+	_, err = tx.Exec(ctx, insertOutboxQuery,
+		"WagerTransaction",
+		wt.ID(),
+		eventType,
+		eventPayload,
+		wt.CreatedAt(),
+	)
+	if err != nil {
+		return PersistResult{}, fmt.Errorf("failed to insert outbox event: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return PersistResult{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	newBalanceStr := fmt.Sprintf("%.2f", float64(newBalance)/100)
+	return PersistResult{
+		TransactionID:    wt.ID(),
+		Status:           wt.State(),
+		BalanceAmount:    newBalanceStr,
+		BalanceCurrency:  walletCurrency,
+		IdempotentReplay: false,
+	}, nil
+}

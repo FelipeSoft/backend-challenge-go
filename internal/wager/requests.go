@@ -1,4 +1,4 @@
-package wagering
+package wager
 
 type CreateWagerTransactionRequest struct {
 	ProviderID                     string  `json:"providerId" binding:"required"`

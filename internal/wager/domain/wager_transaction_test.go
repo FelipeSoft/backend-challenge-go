@@ -4,13 +4,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/FelipeSoft/jungle-gaming/internal/domain"
+	"github.com/FelipeSoft/backend-challenge-go/internal/domain"
 )
 
 func TestNewInternalOpening_Success(t *testing.T) {
 	now := time.Now()
 	amount, _ := domain.NewMoneyFromString("100.00", "BRL")
-	tx, err := NewInternalOpening("tx-1", "w-123", "p-456", amount, now)
+	tx, err := NewInternalOpening("w-123", "p-456", amount, now)
 	if err != nil {
 		t.Fatalf("unexpected error creating internal opening: %v", err)
 	}

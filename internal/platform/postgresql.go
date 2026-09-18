@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,8 +14,8 @@ var DatabaseModule = fx.Options(
 	fx.Provide(NewPostgresPool),
 )
 
-func NewPostgresPool(lc fx.Lifecycle) *pgxpool.Pool {
-	dsn := os.Getenv("DATABASE_URL")
+func NewPostgresPool(lc fx.Lifecycle, cfg *Config) *pgxpool.Pool {
+	dsn := cfg.DatabaseURL
 	if dsn == "" {
 		panic("the DATABASE_URL environment variable is required")
 	}
@@ -32,7 +31,7 @@ func NewPostgresPool(lc fx.Lifecycle) *pgxpool.Pool {
 	defer cancel()
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		log.Fatalf("falha ao criar pool de conexões do postgres: %v", err)
+		log.Fatalf("fail to create connection pools of postgresql: %v", err)
 	}
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {

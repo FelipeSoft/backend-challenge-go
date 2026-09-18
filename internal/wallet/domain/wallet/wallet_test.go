@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/FelipeSoft/jungle-gaming/internal/domain"
+	"github.com/FelipeSoft/backend-challenge-go/internal/domain"
 )
 
 func TestNewWallet_Success(t *testing.T) {
@@ -28,7 +28,7 @@ func TestWallet_CreditAndDebit(t *testing.T) {
 	now := time.Now()
 	wallet, _ := NewWallet("p-456", "BRL", now)
 	deposit, _ := domain.NewMoneyFromString("100.00", "BRL")
-		err := wallet.Credit(deposit, now)
+	err := wallet.Credit(deposit, now)
 	if err != nil {
 		t.Fatalf("failed to credit: %v", err)
 	}

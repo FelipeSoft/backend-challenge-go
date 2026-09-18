@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
@@ -10,10 +10,23 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w" \
-    -o /api ./cmd/api
+    -o /bin/api ./cmd/api
 
-FROM scratch
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /bin/consumer ./cmd/consumer
 
-COPY --from=builder /api /api
 
-ENTRYPOINT ["/api"]
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+
+COPY --from=builder /bin/api /app/api
+COPY --from=builder /bin/consumer /app/consumer
+
+USER 65532:65532
+
+ENTRYPOINT ["/app/api"]

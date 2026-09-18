@@ -12,6 +12,13 @@ type Money struct {
 	currency string
 }
 
+func NewMoneyFromInt(amount int64, currency string) (Money, error) {
+	if amount < 0 {
+		return Money{}, ErrNegativeExternal
+	}
+	return Money{amount: amount, currency: currency}, nil
+}
+
 func NewMoneyFromString(s string, currency string) (Money, error) {
 	if s == "" {
 		return Money{}, ErrEmptyMoneyString
@@ -52,14 +59,6 @@ func Zero(currency string) (Money, error) {
 		return Money{}, err
 	}
 	return Money{amount: 0, currency: currency}, nil
-}
-
-func (m Money) Amount() int64 {
-	return m.amount
-}
-
-func (m Money) Currency() string {
-	return m.currency
 }
 
 func (m Money) Add(other Money) (Money, error) {
@@ -112,6 +111,35 @@ func (m Money) Equals(other Money) bool {
 	return m.amount == other.amount && m.currency == other.currency
 }
 
+func (m Money) String() string {
+	decimalDigits := 2
+	if m.currency == "BRL" {
+		decimalDigits = 2
+	}
+	intPart := m.amount / int64(math.Pow10(decimalDigits))
+	decPart := m.amount % int64(math.Pow10(decimalDigits))
+	strAmount := fmt.Sprintf("%d.%02d", intPart, decPart)
+	return strAmount
+}
+
+func validateCurrency(currency string) error {
+	if len(currency) != 3 {
+		return &ErrInvalidCurrency{
+			Currency: currency,
+			Reason:   "must be a 3-letter ISO 4217 code",
+		}
+	}
+	for _, r := range currency {
+		if r < 'A' || r > 'Z' {
+			return &ErrInvalidCurrency{
+				Currency: currency,
+				Reason:   "must contain only uppercase ASCII letters",
+			}
+		}
+	}
+	return nil
+}
+
 func (m Money) MarshalJSON() ([]byte, error) {
 	dollars := m.amount / 100
 	cents := m.amount % 100
@@ -138,20 +166,10 @@ func (m *Money) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func validateCurrency(currency string) error {
-	if len(currency) != 3 {
-		return &ErrInvalidCurrency{
-			Currency: currency,
-			Reason:   "must be a 3-letter ISO 4217 code",
-		}
-	}
-	for _, r := range currency {
-		if r < 'A' || r > 'Z' {
-			return &ErrInvalidCurrency{
-				Currency: currency,
-				Reason:   "must contain only uppercase ASCII letters",
-			}
-		}
-	}
-	return nil
+func (m Money) Amount() int64 {
+	return m.amount
+}
+
+func (m Money) Currency() string {
+	return m.currency
 }

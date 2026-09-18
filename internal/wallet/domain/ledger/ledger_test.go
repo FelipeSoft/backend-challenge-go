@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/FelipeSoft/jungle-gaming/internal/domain"
+	"github.com/FelipeSoft/backend-challenge-go/internal/domain"
 )
 
 func TestNewWalletLedgerEntry_Success(t *testing.T) {

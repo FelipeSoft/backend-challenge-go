@@ -2,10 +2,15 @@ package usecase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"time"
 
-	domain "github.com/FelipeSoft/jungle-gaming/internal/wallet/domain/wallet"
-	"github.com/FelipeSoft/jungle-gaming/internal/wallet/repository"
+	"github.com/FelipeSoft/backend-challenge-go/internal/domain"
+	walletdomain "github.com/FelipeSoft/backend-challenge-go/internal/wallet/domain/wallet"
+	"github.com/FelipeSoft/backend-challenge-go/internal/wallet/repository"
+	"github.com/google/uuid"
 )
 
 type CreateWallet struct {
@@ -24,7 +29,7 @@ type CreateWalletOutput struct {
 	PlayerID        string
 	BalanceAmount   string
 	BalanceCurrency string
-	Version         int
+	Version         int64
 }
 
 func NewCreateWallet(walletRepository repository.WalletRepository) *CreateWallet {
@@ -34,23 +39,55 @@ func NewCreateWallet(walletRepository repository.WalletRepository) *CreateWallet
 }
 
 func (uc *CreateWallet) Execute(ctx context.Context, input CreateWalletInput) (CreateWalletOutput, error) {
-	wallet, err := domain.NewWallet(
+	initialMoney, err := domain.NewMoneyFromString(input.InitialBalanceAmount, input.InitialBalanceCurrency)
+	if err != nil {
+		return CreateWalletOutput{}, err
+	}
+	walletUUID, err := uuid.NewV7()
+	if err != nil {
+		return CreateWalletOutput{}, err
+	}
+	wallet, err := walletdomain.RehydrateWallet(
+		walletUUID.String(),
 		input.PlayerID,
-		input.InitialBalanceCurrency,
+		initialMoney,
+		1,
+		input.Now,
 		input.Now,
 	)
 	if err != nil {
 		return CreateWalletOutput{}, err
 	}
-	walletId, err := uc.walletRepository.CreateWallet(ctx, wallet)
+	var wagerTransactionId string
+	var payloadHash string
+	if initialMoney.Amount() > 0 {
+		txUUID, err := uuid.NewV7()
+		if err != nil {
+			return CreateWalletOutput{}, err
+		}
+		wagerTransactionId = txUUID.String()
+		payloadMap := map[string]string{
+			"playerId": input.PlayerID,
+			"amount":   initialMoney.String(),
+			"currency": initialMoney.Currency(),
+			"kind":     "OPENING",
+		}
+		canonicalJSON, err := json.Marshal(payloadMap)
+		if err != nil {
+			return CreateWalletOutput{}, err
+		}
+		hashBytes := sha256.Sum256(canonicalJSON)
+		payloadHash = fmt.Sprintf("%x", hashBytes)
+	}
+	_, err = uc.walletRepository.CreateWallet(ctx, wallet, wagerTransactionId, payloadHash)
 	if err != nil {
 		return CreateWalletOutput{}, err
 	}
 	return CreateWalletOutput{
-		WalletID:        walletId,
-		PlayerID:        input.PlayerID,
-		BalanceAmount:   input.InitialBalanceAmount,
-		BalanceCurrency: input.InitialBalanceCurrency,
-		Version:         1,
+		WalletID:        wallet.ID(),
+		PlayerID:        wallet.PlayerID(),
+		BalanceAmount:   wallet.Balance().String(),
+		BalanceCurrency: wallet.Currency(),
+		Version:         wallet.Version(),
 	}, nil
 }

@@ -3,7 +3,7 @@ package domain
 import (
 	"time"
 
-	"github.com/FelipeSoft/jungle-gaming/internal/domain"
+	"github.com/FelipeSoft/backend-challenge-go/internal/domain"
 	"github.com/google/uuid"
 )
 

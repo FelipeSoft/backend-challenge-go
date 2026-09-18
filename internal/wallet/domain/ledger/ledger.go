@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/FelipeSoft/jungle-gaming/internal/domain"
+	"github.com/FelipeSoft/backend-challenge-go/internal/domain"
 )
 
 type Direction string

@@ -2,14 +2,16 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 
-	domain "github.com/FelipeSoft/jungle-gaming/internal/wallet/domain/wallet"
+	domain "github.com/FelipeSoft/backend-challenge-go/internal/wallet/domain/wallet"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type WalletRepository interface {
-	CreateWallet(ctx context.Context, wallet domain.Wallet) (string, error)
+	CreateWallet(ctx context.Context, wallet domain.Wallet, wagerTransactionId string, payloadHash string) (string, error)
 }
 
 type postgresWalletRepo struct {
@@ -20,34 +22,74 @@ func NewPostgresWalletRepository(db *pgxpool.Pool) WalletRepository {
 	return &postgresWalletRepo{db: db}
 }
 
-func (r *postgresWalletRepo) CreateWallet(ctx context.Context, wallet domain.Wallet) (string, error) {
-	var walletIDCreated string
-	query := `
-		INSERT INTO wallets (
-			id, 
-			player_id, 
-			currency, 
-			balance_amount, 
-			version, 
-			created_at, 
-			updated_at
-		) 
-		VALUES ($1, $2, $3, $4, $5, $6, $7) 
-		RETURNING id;
-	`
-	err := r.db.QueryRow(
-		ctx, 
-		query, 
-		wallet.ID(),
-		wallet.PlayerID(),
-		wallet.Currency(),
-		wallet.Balance().Amount(),
-		wallet.Version(),
-		wallet.CreatedAt(),
-		wallet.UpdatedAt(),
-	).Scan(&walletIDCreated)
+func (r *postgresWalletRepo) CreateWallet(ctx context.Context, wallet domain.Wallet, wagerTransactionId string, payloadHash string) (string, error) {
+	dbTx, err := r.db.Begin(ctx)
 	if err != nil {
-		return "", fmt.Errorf("erro ao criar carteira: %w", err)
+		return "", fmt.Errorf("falha ao iniciar transação SQL: %w", err)
 	}
-	return walletIDCreated, nil
+	defer dbTx.Rollback(ctx)
+	walletID := wallet.ID()
+	playerID := wallet.PlayerID()
+	currency := wallet.Currency()
+	amount := wallet.Balance().Amount()
+	now := time.Now()
+	queryWallet := `
+		INSERT INTO wallets (id, player_id, currency, balance_amount, version, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, 1, $5, $6);
+	`
+	_, err = dbTx.Exec(ctx, queryWallet, walletID, playerID, currency, amount, now, now)
+	if err != nil {
+		return "", fmt.Errorf("erro ao inserir carteira (possível conflito de player/currency): %w", err)
+	}
+	if amount > 0 {
+		queryTx := `
+			INSERT INTO wager_transactions (
+				id, wallet_id, player_id, kind, amount_value, amount_currency, 
+				status, payload_hash, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, 'OPENING', $4, $5, 'PROCESSED', $6, $7, $8);
+		`
+		_, err = dbTx.Exec(ctx, queryTx, wagerTransactionId, walletID, playerID, amount, currency, payloadHash, now, now)
+		if err != nil {
+			return "", fmt.Errorf("erro ao inserir wager transaction OPENING: %w", err)
+		}
+		queryLedger := `
+			INSERT INTO wallet_ledger_entries (
+				wallet_id, transaction_id, direction, amount_value, amount_currency, 
+				balance_before_value, balance_before_currency, balance_after_value, balance_after_currency, created_at
+			)
+			VALUES ($1, $2, 'CREDIT', $3, $4, 0, $5, $3, $4, $6);
+		`
+		_, err = dbTx.Exec(ctx, queryLedger, walletID, wagerTransactionId, amount, currency, currency, now)
+		if err != nil {
+			return "", fmt.Errorf("erro ao inserir ledger entry: %w", err)
+		}
+		processedEventPayload, _ := json.Marshal(map[string]interface{}{
+			"transactionId": wagerTransactionId,
+			"walletId":      walletID,
+			"status":        "PROCESSED",
+		})
+		balanceChangedPayload, _ := json.Marshal(map[string]interface{}{
+			"walletId":      walletID,
+			"transactionId": wagerTransactionId,
+			"direction":     "CREDIT",
+			"balanceBefore": 0,
+			"balanceAfter":  amount,
+			"walletVersion": 1,
+		})
+		queryOutbox := `
+			INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, occurred_at)
+			VALUES 
+				('Wallet', $1, 'WagerTransactionProcessed', $2, $4),
+				('Wallet', $1, 'WalletBalanceChanged', $3, $4);
+		`
+		_, err = dbTx.Exec(ctx, queryOutbox, walletID, processedEventPayload, balanceChangedPayload, now)
+		if err != nil {
+			return "", fmt.Errorf("erro ao inserir registros na outbox: %w", err)
+		}
+	}
+	if err := dbTx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("falha ao commitar transação de abertura: %w", err)
+	}
+	return walletID, nil
 }

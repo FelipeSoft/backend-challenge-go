@@ -1,23 +1,34 @@
 package wallet
 
 import (
+	"log"
 	"net/http"
 	"time"
 
-	"github.com/FelipeSoft/jungle-gaming/internal/wallet/query"
-	"github.com/FelipeSoft/jungle-gaming/internal/wallet/usecase"
+	"github.com/FelipeSoft/backend-challenge-go/internal/wallet/query"
+	"github.com/FelipeSoft/backend-challenge-go/internal/wallet/usecase"
 	"github.com/gin-gonic/gin"
 )
 
 type Handler struct {
-	getWallet       query.GetWallet
-	getWalletLedger query.GetWalletLedger
-	createWallet    usecase.CreateWallet
-	reconcileWallet usecase.ReconcileWallet
+	getWallet       *query.GetWallet
+	getWalletLedger *query.GetWalletLedger
+	createWallet    *usecase.CreateWallet
+	reconcileWallet *usecase.ReconcileWallet
 }
 
-func NewHandler() *Handler {
-	return &Handler{}
+func NewHandler(
+	getWallet *query.GetWallet,
+	getWalletLedger *query.GetWalletLedger,
+	createWallet *usecase.CreateWallet,
+	reconcileWallet *usecase.ReconcileWallet,
+) *Handler {
+	return &Handler{
+		getWallet:       getWallet,
+		getWalletLedger: getWalletLedger,
+		createWallet:    createWallet,
+		reconcileWallet: reconcileWallet,
+	}
 }
 
 func (s *Handler) GetWallet(c *gin.Context) {
@@ -48,10 +59,11 @@ func (s *Handler) GetWalletLedger(c *gin.Context) {
 	}
 	output, err := s.getWalletLedger.Execute(
 		c.Request.Context(),
-		walletId, 
+		walletId,
 		c.Query("cursor"),
 		c.Query("limit"),
 	)
+	log.Print(output)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
@@ -97,7 +109,7 @@ func (s *Handler) ReconcileWallet(c *gin.Context) {
 		})
 		return
 	}
-	output, err := s.reconcileWallet.Execute(usecase.ReconcileWalletInput{
+	output, err := s.reconcileWallet.Execute(c.Request.Context(), usecase.ReconcileWalletInput{
 		WalletID: walletId,
 	})
 	if err != nil {
@@ -109,16 +121,16 @@ func (s *Handler) ReconcileWallet(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"walletId": walletId,
 		"storedBalance": gin.H{
-			"amount":   output.StoredBalanceAmount,
-			"currency": output.StoredBalanceCurrency,
+			"amount":   output.StoredBalance.Amount(),
+			"currency": output.StoredBalance.Currency(),
 		},
 		"calculatedBalance": gin.H{
-			"amount":   output.CalculatedBalanceAmount,
-			"currency": output.CalculatedBalanceCurrency,
+			"amount":   output.CalculatedBalance.Amount(),
+			"currency": output.CalculatedBalance.Currency(),
 		},
 		"difference": gin.H{
-			"amount":   output.DifferenceAmount,
-			"currency": output.DifferenceCurrency,
+			"amount":   output.Difference.Amount(),
+			"currency": output.Difference.Currency(),
 		},
 		"consistent":     output.Consistent,
 		"checkedEntries": output.CheckedEntries,

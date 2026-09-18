@@ -7,28 +7,29 @@ import (
 )
 
 type Handler struct {
-	service Service
+	getProviderWagerTransaction *GetProviderWagerTransaction
 }
 
-func NewHandler(Service Service) *Handler {
+func NewHandler(getProviderWagerTransaction *GetProviderWagerTransaction) *Handler {
 	return &Handler{
-		service: Service,
+		getProviderWagerTransaction: getProviderWagerTransaction,
 	}
 }
 
 func (s *Handler) GetExternalTransaction(c *gin.Context) {
 	externalTransactionId := c.Param("externalTransactionId")
 	if externalTransactionId == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "externalTransactionId is required",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "externalTransactionId is required"})
 		return
 	}
-	externalTransaction, err := s.service.GetExternalTransaction(externalTransactionId)
+	providerId := c.Param("providerId")
+	if providerId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "providerId is required"})
+		return
+	}
+	externalTransaction, err := s.getProviderWagerTransaction.Execute(c.Request.Context(), externalTransactionId, providerId)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, externalTransaction)

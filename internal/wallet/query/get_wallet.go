@@ -5,21 +5,17 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/FelipeSoft/backend-challenge-go/internal/domain"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type GetWalletResponse struct {
-	ID        string    `json:"id"`
-	PlayerID  string    `json:"playerID"`
-	Balance   MoneyDTO  `json:"balance"`
-	Version   int64     `json:"version"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-}
-
-type MoneyDTO struct {
-	Amount   int64  `json:"amount"`
-	Currency string `json:"currency"`
+	ID        string       `json:"id"`
+	PlayerID  string       `json:"playerID"`
+	Balance   domain.Money `json:"balance" binding:"required"`
+	Version   int64        `json:"version"`
+	CreatedAt time.Time    `json:"createdAt"`
+	UpdatedAt time.Time    `json:"updatedAt"`
 }
 
 type GetWallet struct {
@@ -56,15 +52,16 @@ func (s *GetWallet) Execute(ctx context.Context, walletId string) (GetWalletResp
 		&updatedAt,
 	)
 	if err != nil {
-		return GetWalletResponse{}, fmt.Errorf("carteira não encontrada: %w", err)
+		return GetWalletResponse{}, fmt.Errorf("wallet not found: %w", err)
+	}
+	money, err := domain.NewMoneyFromInt(balanceAmount, currency)
+	if err != nil {
+		return GetWalletResponse{}, fmt.Errorf("error creating Money: %w", err)
 	}
 	return GetWalletResponse{
-		ID:       id,
-		PlayerID: playerID,
-		Balance: MoneyDTO{
-			Amount:   balanceAmount,
-			Currency: currency,
-		},
+		ID:        id,
+		PlayerID:  playerID,
+		Balance:   money,
 		Version:   version,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
