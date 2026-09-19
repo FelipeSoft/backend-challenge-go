@@ -15,20 +15,20 @@ type CreateWagerTransaction struct {
 }
 
 type CreateWagerTransactionInput struct {
-	ProviderID                     string
-	ExternalTransactionID          string
-	PlayerID                       string
-	WalletID                       string
-	RoundID                        *string
-	GameID                         *string
-	Kind                           string
-	MoneyAmount                    string
-	MoneyCurrency                  string
-	IdempotencyKey                 string
-	ReferenceExternalTransactionId *string
-	MessageID                      *string
-	ConsumerName                   *string
-	PayloadHash                    *string
+    ProviderID                     string  `json:"provider_id"`
+    ExternalTransactionID          string  `json:"external_transaction_id"`
+    PlayerID                       string  `json:"player_id"`
+    WalletID                       string  `json:"wallet_id"`
+    RoundID                        *string `json:"round_id"`
+    GameID                         *string `json:"game_id"`
+    Kind                           string  `json:"kind"`
+    MoneyAmount                    string  `json:"money_amount"`
+    MoneyCurrency                  string  `json:"money_currency"`
+    IdempotencyKey                 string  `json:"idempotency_key"`
+    ReferenceExternalTransactionId *string `json:"reference_external_transaction_id"`
+    MessageID                      *string `json:"message_id"`
+    ConsumerName                   *string `json:"consumer_name"`
+    PayloadHash                    *string `json:"payload_hash"`
 }
 
 type CreateWagerTransactionOutput struct {

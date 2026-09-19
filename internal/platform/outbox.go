@@ -134,8 +134,6 @@ func (w *OutboxWorker) publishEvent(ctx context.Context, eventID, eventType, agg
 		MessageGroupId:         aws.String(aggregateID),
 		MessageDeduplicationId: aws.String(eventID),
 	}
-	w.logger.Info("Tentando enviar mensagem para o SQS", "queueURL", w.queueURL, "eventId", eventID)
-
 	_, err := w.sqsClient.SendMessage(ctx, input)
 	if err != nil {
 		w.logger.Error("FALHA CRUCIAL NO SQS SENDMESSAGE", "error", err)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/FelipeSoft/backend-challenge-go/internal/domain"
 	wagerdomain "github.com/FelipeSoft/backend-challenge-go/internal/wager/domain"
 	"github.com/FelipeSoft/backend-challenge-go/internal/wager/usecase"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -86,61 +87,66 @@ func (c *SQSConsumer) Stop(ctx context.Context) error {
 }
 
 func (c *SQSConsumer) processMessage(ctx context.Context, msg types.Message) error {
-	if msg.Body == nil {
-		return errors.New("empty body in SQS message")
-	}
-	var envelope SQSMessageEnvelope
-	if err := json.Unmarshal([]byte(*msg.Body), &envelope); err != nil {
-		c.logger.Error("Error to deserialize SQS envelope", "error", err)
-		return err
-	}
-	messageID := envelope.MessageID
-	if messageID == "" && msg.MessageId != nil {
-		messageID = *msg.MessageId
-	}
-	c.logger.Info("Processing transaction with SQS",
-		"message_id", messageID,
-		"external_transaction_id", envelope.Data.ExternalTransactionID,
-		"provider_id", envelope.Data.ProviderID,
-	)
-	payloadHash, err := wagerdomain.ComputePayloadHash(
-		envelope.Data.ProviderID,
-		envelope.Data.ExternalTransactionID,
-		envelope.Data.PlayerID,
-		envelope.Data.WalletID,
-		envelope.Data.Kind,
-		envelope.Data.RoundID,
-		envelope.Data.GameID,
-		envelope.Data.ReferenceExternalTransactionId,
-		envelope.Data.Money.Amount(),
-		envelope.Data.Money.Currency(),
-	)
-	if err != nil {
-		return err
-	}
-	idempotencyKey := envelope.Data.IdempotencyKey
-	if idempotencyKey == "" {
-		idempotencyKey = envelope.Data.ProviderID + ":" + envelope.Data.ExternalTransactionID
-	}
-	input := usecase.CreateWagerTransactionInput{
-		ProviderID:                     envelope.Data.ProviderID,
-		ExternalTransactionID:          envelope.Data.ExternalTransactionID,
-		PlayerID:                       envelope.Data.PlayerID,
-		WalletID:                       envelope.Data.WalletID,
-		RoundID:                        envelope.Data.RoundID,
-		GameID:                         envelope.Data.GameID,
-		Kind:                           envelope.Data.Kind,
-		MoneyAmount:                    envelope.Data.Money.String(),
-		MoneyCurrency:                  envelope.Data.Money.Currency(),
-		IdempotencyKey:                 idempotencyKey,
-		ReferenceExternalTransactionId: envelope.Data.ReferenceExternalTransactionId,
-		MessageID:                      &messageID,
-		ConsumerName:                   &c.consumerName,
-		PayloadHash:                    &payloadHash,
-	}
-	_, err = c.createWagerTransaction.Execute(ctx, input)
-	if err != nil {
-		return err
-	}
-	return nil
+    if msg.Body == nil {
+        return errors.New("empty body in SQS message")
+    }
+    var envelope SQSMessageEnvelope
+    if err := json.Unmarshal([]byte(*msg.Body), &envelope); err != nil {
+        c.logger.Error("Error to deserialize SQS envelope", "error", err)
+        return err
+    }
+    money, err := domain.NewMoneyFromString(envelope.Data.Money.Amount, envelope.Data.Money.Currency)
+    if err != nil {
+        c.logger.Error("Failed to parse money from SQS DTO", "amount", envelope.Data.Money.Amount, "currency", envelope.Data.Money.Currency, "error", err)
+        return err
+    }
+    messageID := envelope.MessageID
+    if messageID == "" && msg.MessageId != nil {
+        messageID = *msg.MessageId
+    }
+    c.logger.Info("Processing transaction with SQS",
+        "message_id", messageID,
+        "external_transaction_id", envelope.Data.ExternalTransactionID,
+        "provider_id", envelope.Data.ProviderID,
+    )
+    payloadHash, err := wagerdomain.ComputePayloadHash(
+        envelope.Data.ProviderID,
+        envelope.Data.ExternalTransactionID,
+        envelope.Data.PlayerID,
+        envelope.Data.WalletID,
+        envelope.Data.Kind,
+        envelope.Data.RoundID,
+        envelope.Data.GameID,
+        envelope.Data.ReferenceExternalTransactionId,
+        money.Amount(),
+        money.Currency(),
+    )
+    if err != nil {
+        return err
+    }
+    idempotencyKey := envelope.Data.IdempotencyKey
+    if idempotencyKey == "" {
+        idempotencyKey = envelope.Data.ProviderID + ":" + envelope.Data.ExternalTransactionID
+    }
+    input := usecase.CreateWagerTransactionInput{
+        ProviderID:                     envelope.Data.ProviderID,
+        ExternalTransactionID:          envelope.Data.ExternalTransactionID,
+        PlayerID:                       envelope.Data.PlayerID,
+        WalletID:                       envelope.Data.WalletID,
+        RoundID:                        envelope.Data.RoundID,
+        GameID:                         envelope.Data.GameID,
+        Kind:                           envelope.Data.Kind,
+        MoneyAmount:                    money.String(),
+        MoneyCurrency:                  money.Currency(),
+        IdempotencyKey:                 idempotencyKey,
+        ReferenceExternalTransactionId: envelope.Data.ReferenceExternalTransactionId,
+        MessageID:                      &messageID,
+        ConsumerName:                   &c.consumerName,
+        PayloadHash:                    &payloadHash,
+    }
+    _, err = c.createWagerTransaction.Execute(ctx, input)
+    if err != nil {
+        return err
+    }
+    return nil
 }
