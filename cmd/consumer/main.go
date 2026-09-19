@@ -43,7 +43,7 @@ func main() {
 				return nil, err
 			}
 			return awsSQS.NewFromConfig(cfg, func(o *awsSQS.Options) {
-				o.BaseEndpoint = aws.String("http://localhost:4566")
+				o.BaseEndpoint = aws.String(platformConfig.SQSBaseEndpoint)
 			}), nil
 		}),
 		fx.Provide(func(cfg *platform.Config) string {

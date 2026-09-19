@@ -16,6 +16,7 @@ type Config struct {
 	AwsAccessKeyId      string
 	AwsSecretAccessKey  string
 	AwsRegion           string
+	SQSBaseEndpoint     string
 }
 
 var ConfigModule = fx.Options(
@@ -33,6 +34,7 @@ func Load() *Config {
 		AwsRegion:           os.Getenv("AWS_REGION"),
 		AwsAccessKeyId:      os.Getenv("AWS_ACCESS_KEY_ID"),
 		AwsSecretAccessKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		SQSBaseEndpoint:     os.Getenv("SQS_BASE_ENDPOINT"),
 	}
 	return cfg
 }

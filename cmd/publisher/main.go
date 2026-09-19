@@ -24,7 +24,7 @@ func main() {
 				Level: slog.LevelInfo,
 			}))
 		}),
-		fx.Provide(func(logger *slog.Logger) (*awsSQS.Client, error) {
+		fx.Provide(func(logger *slog.Logger, platformConfig *platform.Config) (*awsSQS.Client, error) {
 			cfg, err := awsConfig.LoadDefaultConfig(context.TODO(),
 				awsConfig.WithRegion("us-east-1"),
 				awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
@@ -34,7 +34,7 @@ func main() {
 				return nil, err
 			}
 			return awsSQS.NewFromConfig(cfg, func(o *awsSQS.Options) {
-				o.BaseEndpoint = aws.String("http://localhost:4566")
+				o.BaseEndpoint = aws.String(platformConfig.SQSBaseEndpoint)
 			}), nil
 		}),
 		fx.Provide(fx.Annotate(
