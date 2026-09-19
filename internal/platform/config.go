@@ -13,6 +13,9 @@ type Config struct {
 	DatabaseURL         string
 	SQSQueueURL         string
 	OutboxQueueURL      string
+	AwsAccessKeyId      string
+	AwsSecretAccessKey  string
+	AwsRegion           string
 }
 
 var ConfigModule = fx.Options(
@@ -27,6 +30,9 @@ func Load() *Config {
 		DatabaseURL:         os.Getenv("DATABASE_URL"),
 		SQSQueueURL:         os.Getenv("SQS_QUEUE_URL"),
 		OutboxQueueURL:      os.Getenv("OUTBOX_QUEUE_URL"),
+		AwsRegion:           os.Getenv("AWS_REGION"),
+		AwsAccessKeyId:      os.Getenv("AWS_ACCESS_KEY_ID"),
+		AwsSecretAccessKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
 	}
 	return cfg
 }

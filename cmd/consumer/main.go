@@ -33,10 +33,10 @@ func main() {
 				Level: slog.LevelInfo,
 			}))
 		}),
-		fx.Provide(func(logger *slog.Logger) (*awsSQS.Client, error) {
+		fx.Provide(func(logger *slog.Logger, platformConfig *platform.Config) (*awsSQS.Client, error) {
 			cfg, err := config.LoadDefaultConfig(context.TODO(),
-				config.WithRegion("us-east-1"),
-				config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
+				config.WithRegion(platformConfig.AwsRegion),
+				config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(platformConfig.AwsAccessKeyId, platformConfig.AwsSecretAccessKey, "")),
 			)
 			if err != nil {
 				logger.Error("Falha ao carregar configuração da AWS", "error", err)
